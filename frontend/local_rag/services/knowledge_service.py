@@ -1,12 +1,12 @@
 from pathlib import Path
 from uuid import uuid4
 
-from fronted.local_rag.config.settings import Settings, get_settings
-from fronted.local_rag.core.document_processor import DocumentProcessor
-from fronted.local_rag.core.embedding_service import EmbeddingService
-from fronted.local_rag.core.rag_chain import RAGChain
-from fronted.local_rag.core.vector_store import VectorStoreManager
-from fronted.local_rag.utils.file_utils import ensure_dir, is_supported_file
+from frontend.local_rag.config.settings import Settings, get_settings
+from frontend.local_rag.core.document_processor import DocumentProcessor
+from frontend.local_rag.core.embedding_service import EmbeddingService
+from frontend.local_rag.core.rag_chain import RAGChain
+from frontend.local_rag.core.vector_store import VectorStoreManager
+from frontend.local_rag.utils.file_utils import ensure_dir, is_supported_file
 
 MAX_HISTORY_TURNS = 10  # 每个会话最多保留的历史轮数，避免prompt无限增长
 

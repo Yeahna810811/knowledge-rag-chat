@@ -1,6 +1,6 @@
 from langchain_openai import ChatOpenAI
-from fronted.local_rag.config.settings import Settings
-from fronted.local_rag.core.vector_store import VectorStoreManager
+from frontend.local_rag.config.settings import Settings
+from frontend.local_rag.core.vector_store import VectorStoreManager
 
 SYSTEM_PROMPT = """你是一个友好、自然的AI聊天助手，同时具备知识库检索增强能力。
 规则：

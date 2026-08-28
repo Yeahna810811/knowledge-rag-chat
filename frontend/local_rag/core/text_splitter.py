@@ -1,7 +1,7 @@
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from fronted.local_rag.config.settings import Settings
+from frontend.local_rag.config.settings import Settings
 
 
 def split_documents(documents: list[Document], settings: Settings) -> list[Document]:

@@ -8,11 +8,11 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fronted.local_rag.config.settings import get_settings
-from fronted.local_rag.core.document_processor import DocumentProcessor
-from fronted.local_rag.core.embedding_service import EmbeddingService
-from fronted.local_rag.core.vector_store import VectorStoreManager
-from fronted.local_rag.core.rag_chain import RAGChain
+from frontend.local_rag.config.settings import get_settings
+from frontend.local_rag.core.document_processor import DocumentProcessor
+from frontend.local_rag.core.embedding_service import EmbeddingService
+from frontend.local_rag.core.vector_store import VectorStoreManager
+from frontend.local_rag.core.rag_chain import RAGChain
 
 def cosine_similarity(vec1, vec2):
     dot_product = np.dot(vec1, vec2)
@@ -83,7 +83,7 @@ def main():
 
     if not vs.load():
         print("\n📂 向量库为空，加载示例文档")
-        sample_path = "fronted/local_rag/data/sample.txt"
+        sample_path = "frontend/local_rag/data/sample.txt"
         if os.path.exists(sample_path):
             docs = dp.process_file(sample_path)
             vs.add_documents(docs)

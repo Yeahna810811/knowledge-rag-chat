@@ -1,7 +1,7 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from fronted.local_rag.services.knowledge_service import KnowledgeService
+from frontend.local_rag.services.knowledge_service import KnowledgeService
 
 
 class AskRequest(BaseModel):

@@ -9,7 +9,7 @@ from langchain_community.document_loaders import (
 )
 from langchain_core.documents import Document
 
-from fronted.local_rag.utils.file_utils import get_file_extension
+from frontend.local_rag.utils.file_utils import get_file_extension
 
 
 def load_document(file_path: Path) -> list[Document]:

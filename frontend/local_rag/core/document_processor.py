@@ -2,9 +2,9 @@ from pathlib import Path
 
 from langchain_core.documents import Document
 
-from fronted.local_rag.config.settings import Settings
-from fronted.local_rag.core.document_loader import load_document
-from fronted.local_rag.core.text_splitter import split_documents
+from frontend.local_rag.config.settings import Settings
+from frontend.local_rag.core.document_loader import load_document
+from frontend.local_rag.core.text_splitter import split_documents
 
 
 class DocumentProcessor:

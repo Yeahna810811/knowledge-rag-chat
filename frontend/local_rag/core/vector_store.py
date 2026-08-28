@@ -3,8 +3,8 @@ from pathlib import Path
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 
-from fronted.local_rag.config.settings import Settings
-from fronted.local_rag.utils.file_utils import ensure_dir
+from frontend.local_rag.config.settings import Settings
+from frontend.local_rag.utils.file_utils import ensure_dir
 
 
 class VectorStoreManager:

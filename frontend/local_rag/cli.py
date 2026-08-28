@@ -4,8 +4,8 @@
 import argparse
 from pathlib import Path
 
-from fronted.local_rag.config.settings import get_settings
-from fronted.local_rag.services.knowledge_service import KnowledgeService
+from frontend.local_rag.config.settings import get_settings
+from frontend.local_rag.services.knowledge_service import KnowledgeService
 
 
 def build_parser() -> argparse.ArgumentParser:

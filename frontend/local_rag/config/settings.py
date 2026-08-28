@@ -3,7 +3,7 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# local_rag 包所在目录（.../Final_Project/fronted/local_rag）
+# local_rag 包所在目录（.../frontend/local_rag）
 PACKAGE_DIR = Path(__file__).resolve().parent.parent
 
 

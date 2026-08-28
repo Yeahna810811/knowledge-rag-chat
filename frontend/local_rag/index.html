@@ -55,7 +55,7 @@ button:hover{opacity:0.9;}
 </div>
 
 <script>
-const baseUrl = "http://127.0.0.1:8000/api";
+const baseUrl = "/api";
 // 简单生成一个会话ID，刷新页面后保持不变（同一浏览器标签内记忆连续）
 const sessionId = localStorage.getItem("rag_session_id") || (() => {
     const id = "s_" + Math.random().toString(36).slice(2);

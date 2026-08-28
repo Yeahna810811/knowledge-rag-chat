@@ -1,14 +1,13 @@
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import uvicorn
 
-from fronted.local_rag.api.routes import create_router
-from fronted.local_rag.config.settings import get_settings
-from fronted.local_rag.services.knowledge_service import KnowledgeService
+from frontend.local_rag.api.routes import create_router
+from frontend.local_rag.config.settings import get_settings
+from frontend.local_rag.services.knowledge_service import KnowledgeService
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -24,8 +23,6 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url=None,
     )
-
-    app.mount("/static", StaticFiles(directory=str(BASE_DIR)), name="static")
 
     @app.get("/")
     async def index_html():
