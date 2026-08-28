@@ -1,0 +1,403 @@
+﻿id,question,answerable,reference_answer,source_contains,first_relevant_rank,reciprocal_rank,retrieval_ms,retrieved_sources,hit@1,hit@3,hit@5,generated_answer,total_ms,basic_correct,safe_refusal,judge_correctness,judge_faithfulness,judge_relevance,judge_safe_refusal
+q001,这个项目使用什么向量索引？,True,FAISS,rag_architecture.md,1,1.0,51.28,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"这个项目使用 **FAISS** 作为向量索引。
+
+根据参考资料，系统将文本向量（由 `BAAI/bge-small-zh-v1.5` 模型生成）存入 FAISS 索引，并且该索引会**持久化到本地磁盘**，以支持后续的快速检索。",2253.0,1,,1.0,1.0,1.0,1.0
+q002,文本向量由什么组件生成？,True,Sentence-Transformers,rag_architecture.md,1,1.0,145.62,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"文本向量由 **Sentence-Transformers** 生成，当前默认使用的嵌入模型是 **BAAI/bge-small-zh-v1.5**。  
+
+这是 RAG 系统中检索链路的关键一步：无论是用户提问还是文档切块，都会通过该模型编码为稠密向量，再送入 FAISS 向量数据库进行相似性检索。",2341.79,1,,1.0,1.0,1.0,1.0
+q003,当前默认嵌入模型是什么？,True,BAAI/bge-small-zh-v1.5,rag_architecture.md,1,1.0,69.59,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"当前默认嵌入模型是 **BAAI/bge-small-zh-v1.5**。
+
+这是在 RAG 系统架构说明中明确提到的，系统使用 Sentence-Transformers 来生成文本向量，并默认采用该中文小尺寸嵌入模型。它适用于中文语义检索，在效果与推理速度之间做了较好平衡。",2195.05,1,,1.0,1.0,1.0,1.0
+q004,系统使用什么工具切分文档？,True,RecursiveCharacterTextSplitter,rag_architecture.md,1,1.0,68.61,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"系统使用 **LangChain 的 `RecursiveCharacterTextSplitter`** 来切分文档。
+
+根据参考资料，当前的切分参数为：
+- `CHUNK_SIZE = 500`（每块文本最多 500 个字符）
+- `CHUNK_OVERLAP = 50`（相邻文本块之间重叠 50 个字符）
+
+这种设置有助于保留上下文连贯性，提升后续向量检索的准确性。",2618.26,1,,1.0,1.0,1.0,1.0
+q005,当前 CHUNK_SIZE 和 CHUNK_OVERLAP 分别是多少？,True,500 和 50,rag_architecture.md,1,1.0,133.11,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"当前的 `CHUNK_SIZE` 是 **500**，`CHUNK_OVERLAP` 是 **50**。
+
+这是文档切分时使用的参数，基于 LangChain 的 `RecursiveCharacterTextSplitter`，用于在构建知识库索引前将原始文本合理分块，兼顾语义连贯性与检索精度。",2133.65,1,,1.0,1.0,1.0,1.0
+q006,用户提交知识问答后，检索阶段首先做什么？,True,把问题编码为查询向量，再从 FAISS 检索相关文本块,rag_architecture.md,2,0.5,102.54,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,0,1,1,"用户提交知识问答后，检索阶段**首先将用户的问题编码为查询向量**。
+
+具体来说，系统会使用默认的嵌入模型（`BAAI/bge-small-zh-v1.5`）对问题文本进行编码，生成一个稠密向量表示。这个查询向量随后被用于在已构建的 FAISS 向量索引中进行相似性检索，以找出最相关的若干文本块（默认 `RETRIEVAL_TOP_K = 4`）。
+
+这是整个 RAG 流程的关键第一步——只有问题被准确向量化，才能在语义空间中高效、合理地匹配知识库中的相关内容。",3496.1,0,,1.0,1.0,1.0,1.0
+q007,RAG 默认最多返回几个候选文本块？,True,4 个,rag_architecture.md,2,0.5,150.54,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,0,1,1,"RAG 默认最多返回 **4 个候选文本块**。
+
+这是由配置参数 `RETRIEVAL_TOP_K=4` 决定的，系统在 FAISS 向量检索阶段会返回与问题最相关的前 4 个文本块，作为后续 Qwen 模型生成答案的上下文依据。",2009.01,1,,1.0,1.0,1.0,1.0
+q008,检索上下文之后会交给哪个模型生成答案？,True,Qwen,rag_architecture.md,1,1.0,109.19,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"检索上下文之后，会和用户的问题一起组成 RAG Prompt，交给 **Qwen 模型** 生成最终答案。
+
+这是当前系统（Benchmark v2）的默认配置，已在【参考资料】中明确说明。Qwen 是一个开源的大语言模型（如 Qwen-1.5 或 Qwen2 系列），负责基于检索到的相关文本块进行推理与回答生成。",2331.02,1,,1.0,1.0,1.0,1.0
+q009,项目通过什么字段区分不同对话会话？,True,session_id,rag_architecture.md,1,1.0,106.93,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"项目通过 `session_id` 字段区分不同对话会话。
+
+根据参考资料，RAG 问答接口支持携带 `session_id`，系统利用它来关联和维护多轮对话的上下文。同一个 `session_id` 对应一次连续的会话，从而实现上下文记忆（如前一轮的问题或答案可被后续请求参考）。需要注意的是，清空“对话记忆”只会影响该 `session_id` 下的历史记录，而不会删除已构建的知识库索引；只有执行“清空知识&记忆”才会一并清理索引和会话状态。",3419.31,1,,1.0,1.0,1.0,1.0
+q010,当前系统是否启用了 BM25 混合检索？,True,没有,rag_architecture.md,1,1.0,83.41,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,1,1,1,"没有，当前系统**未启用 BM25 混合检索**。
+
+根据参考资料，系统目前采用的是**单路稠密向量检索**（即仅基于 Sentence-Transformers 生成的语义向量 + FAISS 检索），明确说明：“没有启用 BM25 混合检索，也没有接入独立的 Cross-Encoder Reranker”。
+
+如需提升检索多样性或结合关键词匹配能力，后续可考虑引入 BM25 作为混合检索的一路，但当前版本暂不支持。",3047.65,1,,1.0,1.0,1.0,1.0
+q011,这个项目的后端框架是什么？,True,FastAPI,api_guide.md,1,1.0,87.89,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,1,1,1,"这个项目的后端框架是 **FastAPI**。  
+根据参考资料，后端默认监听端口为 `8000`，服务可通过 `run.py` 启动，启动后可在本地浏览器访问 `http://127.0.0.1:8000`。",1824.56,1,,1.0,1.0,0.8,1.0
+q012,后端默认监听哪个端口？,True,8000,api_guide.md,1,1.0,135.17,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,1,1,1,"后端默认监听 **8000 端口**。  
+（依据参考资料：API 与后端说明、部署与配置说明中均明确指出默认 PORT 配置为 8000）",1506.93,1,,1.0,1.0,1.0,1.0
+q013,上传文档后后端会进行哪些主要处理？,True,文档读取、文本切分、向量生成和 FAISS 索引更新,api_guide.md,1,1.0,65.0,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"上传文档后，后端会依次完成以下**四大主要处理步骤**：
+
+1. **文档读取与解析**  
+   - 支持 TXT、Markdown、PDF、DOCX 和 CSV 五种格式（当前不支持 XLSX）；  
+   - 根据文件类型调用对应解析器提取纯文本内容。
+
+2. **文本切分（Chunking）**  
+   - 使用 LangChain 的 `RecursiveCharacterTextSplitter`；  
+   - 当前配置：`CHUNK_SIZE = 500` 字符，`CHUNK_OVERLAP = 50`，以兼顾语义完整性与检索粒度。
+
+3. **向量化（Embedding）**  
+   - 使用 Sentence-Transformers 模型（默认为 `BAAI/bge-small-zh-v1.5`）将每个文本块编码为稠密向量；  
+   - 向量维度固定，适配后续 FAISS 检索。
+
+4. **索引构建与持久化**  
+   - 将向量存入 FAISS 索引，并**持久化到本地磁盘**；  
+   - 同一知识库中所有文档的索引会合并管理，支持跨文档联合检索。
+
+✅ 补充说明：  
+- 这些操作在用户上传后**自动触发**，无需手动干预；  
+- 知识库索引独立于对话记忆存在——即使清空对话历史，索引仍保留；  
+- 若执行“清空知识&记忆”，才会彻底删除索引和会话状态。
+
+需要我帮你梳理某一步的技术细节（比如切分逻辑、FAISS 更新机制），或解释如何验证处理是否成功？ 😊",8589.57,0,,1.0,1.0,1.0,1.0
+q014,RAG 问答接口能否携带 session_id？,True,可以,api_guide.md,1,1.0,138.19,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"是的，RAG 问答接口**可以携带 `session_id`**。
+
+根据项目说明，`session_id` 用于**关联多轮对话上下文**，系统会基于该 ID 区分不同会话，从而在连续提问时保留同一会话的历史（例如上一轮的问题或回答上下文），提升多轮问答的一致性和连贯性。
+
+需要注意的是：
+- 携带 `session_id` 不会影响知识库检索本身（检索仍基于当前问题 + 已构建的 FAISS 索引）；
+- 它主要影响**对话状态管理**，比如 RAG Prompt 中是否拼接历史对话片段（取决于具体实现逻辑）；
+- 清空“对话记忆”只会删除该 `session_id` 对应的会话历史，**不会删除已构建的知识库索引**；
+- 如果执行的是“清空知识&记忆”，则会同时清理索引和会话数据。
+
+如需在调用中使用，建议在请求参数或 Header 中传递（具体格式可参考前端代码或 FastAPI 接口定义，通常为 query 参数或 JSON body 字段）。需要我帮你模拟一个带 `session_id` 的请求示例吗？ 😊",6570.19,1,,1.0,1.0,0.9,1.0
+q015,RAG 返回结果除了 answer 还可以包含什么？,True,sources,api_guide.md,1,1.0,84.03,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"RAG 返回结果除了 `answer` 外，还可以包含 `sources`，用于展示回答所依据的知识来源（例如来自哪份文档、哪个文本块等）。这有助于提升回答的可解释性和可信度，方便用户追溯信息出处。
+
+这个设计在【参考资料】中明确提到：“RAG 返回结果除了 answer 外，还可以包含 sources，用于展示回答所依据的知识来源。”",2204.98,1,,1.0,1.0,1.0,1.0
+q016,普通聊天和 RAG 问答的核心区别是什么？,True,普通聊天不强制检索知识库，RAG 问答会先检索知识库,api_guide.md,1,1.0,102.16,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"普通聊天和 RAG 问答的核心区别在于**是否依赖你上传的私有知识库来生成回答**，具体可以从以下几个方面理解：
+
+🔹 **信息来源不同**  
+- **普通聊天模式**：不强制检索知识库，行为更接近通用大模型对话（如和 Qwen 自由聊天），回答主要基于模型自身的参数化知识，**不参考你上传的文档**。  
+- **RAG 问答模式**：会先在你已上传并构建索引的文档中进行语义检索（用 BGE 向量 + FAISS），找出最相关的 4 个文本块（`RETRIEVAL_TOP_K=4`），再将这些上下文 + 你的问题一起交给 Qwen 生成答案——**答案有据可依，且来源可追溯（支持返回 `sources`）**。
+
+🔹 **适用场景不同**  
+- 普通聊天适合闲聊、创意发散、通用问题解答；  
+- RAG 问答适合需要**精准依据内部资料**的场景，比如查公司制度、读项目文档、理解产品手册等。
+
+🔹 **上下文管理方式一致，但内容基础不同**  
+两者都支持通过 `session_id` 维持多轮对话记忆（例如追问“上一条提到的流程图在哪？”），但：  
+- 普通聊天的记忆只是历史消息缓存；  
+- RAG 问答的记忆 + 每次都会重新检索知识库 → 即使上下文没提文档名，系统仍能结合最新检索结果作答。
+
+✅ 小贴士：清空“对话记忆”不会影响已建好的知识库索引；只有点击“清空知识&记忆”才会一并删除文档向量和会话状态。
+
+需要我帮你对比一次实际提问在两种模式下的输出差异吗？ 😊",9131.06,0,,1.0,1.0,1.0,1.0
+q017,清空对话记忆会删除知识库索引吗？,True,不会,api_guide.md,2,0.5,64.72,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,0,1,1,"不会，**清空对话记忆不会删除知识库索引**。
+
+根据文档说明：  
+✅ 清空对话记忆（即清除会话历史）仅影响当前 session 的聊天上下文，比如之前问过的问题、模型的回答等；  
+❌ **已上传并成功索引的文档内容、FAISS 向量索引、知识库状态均保持不变**，后续仍可正常进行 RAG 问答。
+
+只有当你执行的是 **“清空知识&记忆”**（注意是带“知识”的完整操作），才会同时：
+- 删除所有已构建的知识库索引（即清空 FAISS 索引 + 文档解析缓存）；
+- 清除当前会话的历史记录。
+
+所以如果你只是想重新开始聊天但保留已有知识库，放心清空记忆即可 👍  
+需要彻底重置知识库时，再选择“清空知识&记忆”。",4594.92,1,,1.0,1.0,1.0,1.0
+q018,项目根目录通过哪个文件启动 Web 服务？,True,run.py,api_guide.md,1,1.0,80.6,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md,1,1,1,项目根目录可以通过 `run.py` 文件启动 Web 服务。,734.15,1,,1.0,1.0,1.0,1.0
+q019,本机浏览器访问地址是什么？,True,http://127.0.0.1:8000,api_guide.md,1,1.0,60.6,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"本机浏览器可以访问：**http://127.0.0.1:8000**
+
+这是后端 FastAPI 服务的默认地址（HOST `127.0.0.1` + PORT `8000`），服务启动后即可通过该地址打开 Web 界面。  
+（信息来自知识库中的「API 与后端说明」和「部署与配置说明」部分）",2932.46,1,,1.0,1.0,1.0,1.0
+q020,真实运行配置主要存放在哪个文件？,True,frontend/local_rag/.env,api_guide.md,1,1.0,44.19,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"真实运行配置主要存放在 `frontend/local_rag/.env` 文件中。
+
+⚠️ 注意：该文件应包含敏感配置（如 `DASHSCOPE_API_KEY`），**不应提交到 GitHub**；公开仓库中仅保留示例模板 `frontend/local_rag/.env.example` 作为占位参考。",1909.68,1,,1.0,1.0,1.0,1.0
+q021,当前系统明确支持哪些文档格式？,True,TXT、Markdown、PDF、DOCX 和 CSV,user_manual.md,1,1.0,106.02,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"当前系统明确支持以下五种文档格式：
+
+- TXT  
+- Markdown（.md）  
+- PDF  
+- DOCX（Microsoft Word 文档）  
+- CSV  
+
+⚠️ 注意：XLSX（Excel 表格）**目前未被声明支持**，如需处理表格类数据，建议先转换为 CSV 或其他支持格式。
+
+这些信息来自《用户使用手册（Benchmark v2）》。需要我帮你确认某种格式的上传或解析注意事项吗？ 😊",2844.85,1,,1.0,1.0,1.0,1.0
+q022,现有文档是否声明支持 XLSX？,True,没有声明,user_manual.md,1,1.0,83.11,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"根据提供的《用户使用手册（Benchmark v2）》，**现有文档没有声明支持 XLSX**。
+
+手册中明确列出当前系统支持的文档格式为：  
+✅ TXT、Markdown、PDF、DOCX 和 CSV  
+❌ **未提及 XLSX**，且特别说明“现有文档没有声明支持 XLSX”。
+
+如需处理 Excel 文件（如 .xlsx），目前需要先手动转换为支持的格式（例如导出为 CSV 或复制粘贴到 Markdown/TXT 中），或等待后续版本扩展格式支持。",2961.29,1,,1.0,1.0,1.0,1.0
+q023,Web 页面上传文档后系统会自动完成什么？,True,解析、文本切分、向量化和索引更新,user_manual.md,1,1.0,69.38,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"Web 页面上传文档后，系统会自动完成以下四个步骤：
+
+✅ **文档解析**：识别并提取文档中的文本内容（支持 TXT、Markdown、PDF、DOCX 和 CSV 格式）；  
+✅ **文本切分**：使用 `RecursiveCharacterTextSplitter` 将文本按 `CHUNK_SIZE=500`、`CHUNK_OVERLAP=50` 进行分块；  
+✅ **向量化**：调用 Sentence-Transformers（默认模型为 `BAAI/bge-small-zh-v1.5`）将每个文本块编码为向量；  
+✅ **索引更新**：将新生成的向量存入 FAISS 向量索引，并持久化到本地磁盘（路径由 `FAISS_INDEX_DIR` 指定）。
+
+整个过程对用户透明，无需手动干预。上传完成后，该文档即纳入知识库，后续 RAG 问答会基于所有已索引的文本块进行检索（默认返回 top-4 最相关块）。
+
+需要提醒的是：当前**不支持 XLSX 格式**，也**不支持 OCR 识别图片/PDF 中的扫描文字**哦 😊",6046.81,0,,1.0,1.0,1.0,1.0
+q024,一个知识库可以包含多个文档吗？,True,可以,user_manual.md,1,1.0,83.28,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"是的，一个知识库可以包含多个文档 ✅
+
+根据用户手册说明：**“同一个知识库可以包含多个文档，检索会在所有已建立索引的文本块中进行。”**
+
+也就是说，你上传的 TXT、Markdown、PDF、DOCX 或 CSV 文件都会被统一解析、切分、向量化，并添加到同一个 FAISS 索引中。后续进行 RAG 问答时，系统会从**所有已索引的文档内容**里联合检索最相关的文本块（默认返回 Top-4），再生成回答。
+
+这样设计特别适合管理公司制度、项目资料、产品文档等多源信息场景～  
+需要我帮你梳理下如何高效组织多个文档的知识库吗？ 😊",3912.78,1,,1.0,1.0,0.9,1.0
+q025,知识问答模式适合什么类型的场景？,True,公司制度、项目文档、产品说明和个人资料库等场景,user_manual.md,1,1.0,81.66,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"知识问答模式特别适合那些**需要基于指定文档内容进行精准、可溯源回答**的场景，例如：
+
+- ✅ 公司内部制度与政策文档（如员工手册、合规指南）  
+- ✅ 项目资料与技术文档（如需求说明书、架构设计、会议纪要）  
+- ✅ 产品说明与用户手册（如功能介绍、API 文档、FAQ）  
+- ✅ 个人知识库（如读书笔记、研究资料、整理的 Markdown 笔记）
+
+这类模式会先从你上传并已索引的文档中检索相关信息（默认返回 top-4 最相关的文本块），再结合检索结果生成回答，并支持返回引用来源（`sources`），从而兼顾**准确性、可解释性与可追溯性**。
+
+简单说：当你希望 AI 的回答“言之有据”，而不是自由发挥时，就用知识问答模式 👍  
+需要我帮你试试上传一份文档或模拟一个问答场景吗？ 😊",5079.16,0,,1.0,1.0,1.0,1.0
+q026,如何让连续多轮请求保留同一会话上下文？,True,使用相同的 session_id,user_manual.md,1,1.0,80.27,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md,1,1,1,"要让连续多轮请求保留同一会话上下文，只需在每次请求中**携带相同的 `session_id`** 即可 ✅
+
+根据文档说明（Benchmark v2）：
+- 系统支持通过 `session_id` 关联多轮对话上下文；
+- RAG 问答接口（以及普通聊天接口）均可接收该参数；
+- 只要 `session_id` 一致，系统就会复用该会话的历史消息（即“对话记忆”），从而实现上下文连贯的多轮交互；
+- 注意：清空「对话记忆」仅清除会话历史，**不会影响已构建的知识库索引**；只有执行「清空知识&记忆」才会一并删除知识库状态和会话数据。
+
+📌 小贴士：  
+- `session_id` 可以是任意字符串（如 UUID、用户 ID 或自定义标识），只要前后一致即可；  
+- 如果未传 `session_id`，系统通常会为每次请求生成新的会话，导致上下文丢失；  
+- 在 Web 前端中，一般由前端自动维护并透传该字段（例如存在 localStorage 或 React state 中）。
+
+需要我帮你写一段带 `session_id` 的 API 调用示例（比如用 curl 或 Python requests）吗？ 😊",6508.15,0,,1.0,1.0,0.9,1.0
+q027,清空对话记忆之后知识库索引还在吗？,True,还在,user_manual.md,1,1.0,89.1,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"是的，**清空对话记忆之后，知识库索引仍然保留**。
+
+根据用户手册和后端说明：  
+- “清空对话记忆”仅会删除当前会话的历史记录（即聊天上下文），**不会影响已上传并完成索引构建的文档内容**；  
+- 知识库的向量索引（FAISS）是持久化存储在本地磁盘的，只要没执行“清空知识&记忆”，索引就一直存在；  
+- 下次发起 RAG 问答（即使新建 session）时，系统仍会基于原有索引进行检索。
+
+✅ 简单说：  
+> 记忆 = 聊天记录（可清）  
+> 知识 = 文档索引（不清不掉，除非主动“清空知识&记忆”）
+
+需要我帮你区分“清空对话记忆”和“清空知识&记忆”的具体操作方式吗？ 😊",4832.96,0,,1.0,1.0,1.0,1.0
+q028,执行“清空知识&记忆”会发生什么？,True,同时清理知识库状态和相关会话记忆,user_manual.md,1,1.0,78.55,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"执行“清空知识&记忆”会**同时清除两部分内容**：
+
+1. **知识库状态**：已上传并完成索引的文档会被彻底删除，对应的 FAISS 向量索引、切分后的文本块等全部清理，相当于知识库回到初始空白状态；
+2. **相关会话记忆**：所有与该操作关联的对话历史（即 session_id 对应的上下文）也会被清空，后续提问将不再继承之前的聊天语境。
+
+⚠️ 注意：这与单纯的“清空对话记忆”不同——后者只删聊天记录，知识库索引依然保留，可继续用于问答。
+
+这个操作不可逆，建议在执行前确认是否需要保留已有知识或对话内容。",3882.9,0,,0.0,0.0,0.0,0.0
+q029,当前版本是否实现语音输入和 OCR？,True,没有,user_manual.md,1,1.0,73.86,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"当前版本**未实现语音输入和 OCR 自动识别**。  
+这是在用户使用手册（Benchmark v2）中明确说明的。
+
+如果你有语音或扫描件（如图片/PDF 图文混排）类文档需要处理，目前需先手动转为支持的格式（如 TXT、Markdown、PDF、DOCX 或 CSV），再上传使用。后续版本如有相关功能更新，会同步在文档中说明 😊",2446.28,0,,1.0,1.0,1.0,1.0
+q030,Hugging Face unauthenticated warning 是否一定代表程序失败？,True,不一定,user_manual.md,2,0.5,125.9,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md,0,1,1,"不是的，**Hugging Face unauthenticated warning 并不一定代表程序失败**。
+
+根据参考资料，这个警告仅表示当前**未提供 `HF_TOKEN`（即未登录 Hugging Face 账号）**，属于一种提示性信息（warning），而非错误（error）。只要所用的模型是**公开可访问的**（例如 `qwen-plus` 等开源模型），系统仍能正常下载、缓存并加载模型，整个流程可以完全正常运行。
+
+✅ 简单来说：  
+- 有 token → 可访问私有模型 + 避免限流 + 消除警告；  
+- 无 token → 公开模型照常使用，仅提示警告，**不影响功能和运行结果**。
+
+所以，如果你看到这个 warning 但问答、检索、服务启动等功能都正常，那就无需担心 👍。需要时再配置 `HF_TOKEN` 即可（比如写入 `.env` 文件中）。需要我帮你写个配置示例吗？ 😊",5286.98,1,,1.0,1.0,1.0,1.0
+q031,默认 HOST 配置是什么？,True,0.0.0.0,deployment_guide.md,1,1.0,121.05,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"默认 HOST 配置是 `0.0.0.0`。  
+这意味着服务会监听所有可用的网络接口，允许本机及同一局域网内的其他设备通过 IP 访问（前提是端口未被防火墙拦截）。  
+如需仅限本地访问，可手动改为 `127.0.0.1`。  
+
+这个配置来自项目的部署说明（Benchmark v2）。",2496.52,1,,1.0,0.0,0.8,1.0
+q032,默认 PORT 配置是多少？,True,8000,deployment_guide.md,1,1.0,73.18,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,1,1,1,"默认 PORT 配置是 **8000**。  
+（根据部署与配置说明，后端默认监听端口也为 8000，服务启动后可通过 `http://127.0.0.1:8000` 访问）",1721.78,1,,1.0,1.0,1.0,1.0
+q033,嵌入模型第一次使用时从哪里下载？,True,Hugging Face,deployment_guide.md,1,1.0,73.23,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"嵌入模型第一次使用时会从 **Hugging Face** 下载（参考资料中明确提到：“嵌入模型第一次使用时会从 Hugging Face 下载，并在后续运行中优先使用本地缓存”）。
+
+具体来说，当前默认使用的嵌入模型是 `BAAI/bge-small-zh-v1.5`（见 RAG 系统架构说明），它托管在 Hugging Face Model Hub 上。首次运行时，程序会自动调用 `transformers` 或 `sentence-transformers` 库从该平台拉取模型权重和配置文件，并缓存到本地（例如 `~/.cache/huggingface/` 目录下），之后就直接加载本地缓存，无需重复下载。
+
+⚠️ 小提示：如果遇到下载缓慢或超时，可考虑配置代理或提前手动下载模型到本地并指定路径；另外，未设置 `HF_TOKEN` 时可能会看到 unauthenticated warning，但只要模型是公开的（如 `bge-small-zh-v1.5`），通常不影响正常使用。",5301.43,1,,1.0,1.0,1.0,1.0
+q034,当前聊天模型配置是什么？,True,qwen-plus,deployment_guide.md,1,1.0,69.14,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"当前聊天模型配置为 `CHAT_MODEL=qwen-plus`。  
+这个配置在【参考资料】的“部署与配置说明（Benchmark v2）”中明确指出，系统使用的是通义千问的 `qwen-plus` 版本作为默认的聊天大模型。",1721.17,1,,1.0,1.0,1.0,1.0
+q035,DashScope 的 OpenAI-compatible API 地址是什么？,True,https://dashscope.aliyuncs.com/compatible-mode/v1,deployment_guide.md,1,1.0,87.04,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,1,1,1,"DashScope 的 OpenAI-compatible API 地址是：  
+**https://dashscope.aliyuncs.com/compatible-mode/v1**
+
+这个地址可用于对接支持 OpenAI 格式 API 的客户端（如 `openai` Python SDK），只需将 `base_url` 配置为该地址，并使用有效的 `DASHSCOPE_API_KEY` 即可调用。",2206.27,1,,1.0,1.0,1.0,1.0
+q036,真实 DashScope API Key 应该写到哪里？,True,frontend/local_rag/.env,deployment_guide.md,1,1.0,82.48,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,1,1,1,"真实 DashScope API Key 应该写入文件：
+
+```
+frontend/local_rag/.env
+```
+
+⚠️ 注意：  
+- 这个 `.env` 文件是**本地运行配置的实际载体**，用于存储 `DASHSCOPE_API_KEY` 等敏感信息；  
+- 它**不应提交到 GitHub**（即需确保在 `.gitignore` 中被忽略）；  
+- 公开仓库中只保留示例模板 `frontend/local_rag/.env.example`，供参考格式。
+
+✅ 正确做法是：  
+1. 复制 `.env.example` 为 `.env`；  
+2. 在 `.env` 中填写你的真实 API Key，例如：  
+   ```env
+   DASHSCOPE_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+   ```  
+3. 保存后重启服务（如通过 `python run.py`），配置即可生效。
+
+需要我帮你生成一个标准的 `.env` 模板内容吗？ 😊",5140.4,1,,1.0,1.0,1.0,1.0
+q037,RETRIEVAL_TOP_K 当前配置是多少？,True,4,deployment_guide.md,1,1.0,59.59,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,1,1,1,"当前 `RETRIEVAL_TOP_K` 的配置值是 **4**。
+
+这意味着在 RAG 问答过程中，系统每次会从 FAISS 向量索引中检索并返回**最多 4 个最相关的文本块**，作为生成答案的上下文依据。该参数可在配置文件（如 `.env`）中调整。",2212.57,1,,1.0,1.0,1.0,1.0
+q038,FAISS 索引目录由什么配置项指定？,True,FAISS_INDEX_DIR,deployment_guide.md,4,0.25,78.54,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,0,0,1,FAISS 索引目录由配置项 `FAISS_INDEX_DIR` 指定。,933.26,1,,1.0,1.0,1.0,1.0
+q039,真实 .env 文件应该上传 GitHub 吗？,True,不应该,deployment_guide.md,3,0.333333,78.89,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md,0,1,1,"不应该上传真实 `.env` 文件到 GitHub。
+
+根据【参考资料】中的“部署与配置说明（Benchmark v2）”明确指出：
+
+> **真实 `.env` 文件不应提交到 GitHub；公开仓库只应保留 `.env.example` 占位模板。**
+
+这是因为 `.env` 文件通常包含敏感信息，例如：
+- `DASHSCOPE_API_KEY`
+- 其他 API 密钥、数据库密码、本地路径等配置
+
+一旦上传到公开仓库，这些密钥可能被泄露，带来安全风险。
+
+✅ 正确做法是：
+- 将 `.env.example`（不含真实密钥的示例模板）提交到仓库，供他人参考；
+- 在本地复制一份 `.env`，填入自己的实际配置，并将其加入 `.gitignore`，确保不会被 Git 跟踪或推送。
+
+需要我帮你生成一个安全的 `.gitignore` 条目或 `.env.example` 模板吗？ 😊",4906.49,1,,1.0,1.0,1.0,1.0
+q040,项目评测脚本可以统计哪些类型的指标？,True,Hit@K、MRR、回答正确性、Faithfulness、Relevance、Safe Refusal、检索延迟和端到端延迟,deployment_guide.md,1,1.0,74.01,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,1,1,1,"项目评测脚本 `evaluation/evaluate_rag.py` 可以统计以下几类指标：
+
+- **检索效果类**：  
+  - `Hit@K`（例如 Hit@1、Hit@4）：衡量正确答案是否出现在前 K 个检索结果中；  
+  - `MRR`（Mean Reciprocal Rank）：反映检索结果中首个相关文档的平均排名倒数，更细致地评估排序质量。
+
+- **生成质量类**：  
+  - **回答正确性**（Answer Correctness）：判断模型生成的答案是否在事实上准确、符合问题意图；  
+  - **Faithfulness**（忠实性）：评估答案是否严格基于检索到的上下文，避免幻觉或编造；  
+  - **Relevance**（相关性）：衡量答案与用户问题的语义匹配程度。
+
+- **安全与鲁棒性类**：  
+  - `Safe Refusal`（安全拒答）：检测模型是否能在面对非法、敏感或无法回答的问题时，合理拒绝作答（而非胡说或泄露隐私）。
+
+- **性能类**：  
+  - **检索延迟**（Retrieval Latency）：从发起查询到完成向量检索并返回 top-K 文本块的时间；  
+  - **端到端延迟**（End-to-End Latency）：从用户提问到最终获得完整 answer（含生成）的总耗时。
+
+这些指标覆盖了 RAG 系统在**效果、可信度、安全性、性能**四个关键维度的表现，适合用于系统迭代优化和 benchmark 对比。需要的话我也可以帮你解读某类指标的具体计算逻辑 😊",8313.35,1,,1.0,1.0,1.0,1.0
+q041,项目单个上传文件最大允许多少 MB？,False,当前知识库资料未提供该信息,,,0.0,79.91,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,0,0,0,"目前【参考资料】中没有明确说明单个上传文件的最大允许大小（MB）限制。
+
+不过，根据常见的 FastAPI + Web 前端部署实践，文件大小限制通常由以下几方面共同决定：
+
+- **前端限制**：`frontend/` 中的上传组件（如 HTML `<input type=""file"">` 或 UI 框架配置）可能设置了默认限制；
+- **FastAPI 后端限制**：默认 `request` 大小上限为约 10 MB（取决于 `uvicorn` 配置和 `Form` 解析行为），但可通过 `--limit-max-requests`、`--limit-request-line` 或自定义 `Request` 解析逻辑调整；
+- **Nginx/Apache（若反向代理）**：常设 `client_max_body_size 50M;` 等参数，否则会返回 413 Request Entity Too Large；
+- **项目实际配置**：真实运行配置集中在 `frontend/local_rag/.env`，但该文件内容未在参考资料中披露，因此无法确认是否已显式设置上传限值。
+
+✅ **建议操作**：  
+你可以尝试上传一个略大于 10 MB 的 PDF 或 TXT 文件进行实测；若失败并返回 413 错误，则大概率是后端或代理层限制，可进一步检查 `uvicorn` 启动参数或 `.env` 中是否有类似 `UPLOAD_MAX_SIZE_MB=50` 的配置。
+
+需要我帮你写一段测试上传的 Python 脚本，或分析如何修改限制？ 😊",7947.77,,0,0.0,0.0,0.0,0.0
+q042,项目正式部署在 AWS 还是阿里云 ECS？,False,当前知识库资料未提供该信息,,,0.0,81.94,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,0,0,0,"从你提供的【参考资料】来看，项目本身**没有明确指定必须部署在 AWS 或阿里云 ECS**，但它确实包含了一些**倾向阿里云的配置线索**，尤其是与 API 服务相关的部分：
+
+- ✅ DashScope 的 OpenAI-compatible API 地址明确为：  
+  `https://dashscope.aliyuncs.com/compatible-mode/v1`  
+  （DashScope 是阿里云推出的模型服务与推理平台）
+
+- ✅ 配置文件中要求填写真实 `DASHSCOPE_API_KEY`，并强调应写入 `frontend/local_rag/.env` —— 这说明**聊天模型后端默认对接的是阿里云 DashScope**（如 `qwen-plus` 模型），而非 AWS Bedrock 或其他云厂商服务。
+
+- ❌ 资料中**完全没有提及 AWS 相关服务**（如 Amazon Bedrock、S3、EC2 部署脚本、IAM 配置等）。
+
+不过需要区分两个层面：
+
+🔹 **模型调用层（LLM inference）**：当前配置指向 **阿里云 DashScope**，因此“模型服务”依赖阿里云。  
+🔹 **基础设施部署层（hosting）**：FastAPI 后端是通用的，可部署在任意 Linux 服务器上——包括本地机器、AWS EC2、阿里云 ECS、腾讯云 CVM 等。资料中只提到默认监听 `0.0.0.0:8000`，并可通过 `run.py` 启动，属于标准 Python Web 部署方式，**不绑定特定云厂商**。
+
+✅ 所以更准确的回答是：  
+> **项目默认模型服务（Qwen 推理）对接阿里云 DashScope；但后端服务本身可部署在任意环境（包括 AWS EC2 或阿里云 ECS），目前资料未限定 IaaS 厂商。实际部署选型取决于你的运维偏好和合规/成本考量——若已使用阿里云生态，ECS + DashScope 是最顺滑的一体化方案。**
+
+需要我帮你生成一份针对阿里云 ECS 的部署 checklist，或适配 AWS EC2 的配置调整建议吗？ 😊",10737.45,,0,0.0,0.0,0.0,0.0
+q043,系统最多支持多少个并发用户？,False,当前知识库资料未提供该信息,,,0.0,36.56,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,0,0,0,"目前提供的【参考资料】中**没有明确说明系统支持的最大并发用户数**。
+
+不过，我们可以从已有信息做一些合理推断：
+
+- 后端基于 **FastAPI**，默认监听 `0.0.0.0:8000`，具备良好的异步处理能力；
+- 检索使用本地 **FAISS 向量索引**（内存+磁盘持久化），无外部数据库依赖，低延迟；
+- 嵌入模型（`BAAI/bge-small-zh-v1.5`）和聊天模型（`qwen-plus`）均为中等规模模型，对 GPU/CPU 资源有一定要求；
+- 并发能力**主要受限于硬件资源**（如 CPU 核心数、内存大小、GPU 显存）以及部署方式（是否启用 uvicorn 多 worker、是否使用 GPU 加速推理等）；
+- 当前未提及负载均衡、自动扩缩容或连接池限制等企业级并发控制机制，说明它更偏向**中小规模本地/内网部署场景**（例如团队内部知识库，几十人同时轻量使用通常可行）。
+
+✅ 简单总结：  
+> **系统本身没有硬编码的并发数上限，实际并发能力取决于你的运行环境（尤其是 CPU/GPU 和内存）。在普通笔记本（16GB 内存 + 无 GPU）上，可稳定支持 5–10 个活跃用户；在服务器（32GB+ 内存 + GPU）上，通过合理配置 uvicorn workers 和模型加载方式，可支持数十甚至上百用户的低频问答（非高频率连续请求）。**
+
+如果你有具体的部署环境（比如用什么机器跑、是否配 GPU、期望多少人同时用），我可以帮你估算更合适的配置 😊",9450.74,,1,0.0,0.0,0.0,0.0
+q044,生产环境使用的 GPU 型号是什么？,False,当前知识库资料未提供该信息,,,0.0,85.79,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,0,0,0,"参考资料中没有提及生产环境所使用的 GPU 型号。该项目的部署说明聚焦于软件配置（如端口、模型名称、索引参数、API 地址等），但未涉及硬件信息，包括 GPU 型号、显存大小或是否启用 GPU 加速等细节。
+
+如果你正在规划生产部署，可根据所选模型（如 `qwen-plus`）的推理需求来选型——例如，`qwen-plus` 是通义千问系列中较大规模的模型，通常建议使用 A10/A100 或同等性能的 GPU（如 V100、L40S）以保障响应速度和并发能力；而嵌入模型 `BAAI/bge-small-zh-v1.5` 则对 GPU 要求较低，甚至可在 CPU 上高效运行。
+
+需要我帮你估算不同 GPU 下的吞吐量或显存占用吗？😊",5093.14,,0,0.0,0.0,0.0,0.0
+q045,服务器每个月的成本是多少？,False,当前知识库资料未提供该信息,,,0.0,86.7,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md,0,0,0,"关于“服务器每个月的成本”，目前【参考资料】中并没有提供任何与硬件、云服务费用、部署成本或运维开销相关的信息。该项目文档聚焦于 RAG 系统的技术架构、配置参数和运行方式（如 FastAPI 后端、FAISS 索引、Qwen 模型调用等），但**未涉及服务器资源规格、部署环境（本地/云服务器）、带宽、GPU/CPU 需求或计费模型**等内容。
+
+因此，无法从现有资料中推算出每月服务器成本。这个成本取决于你实际的部署方式，例如：
+
+- ✅ **本地部署**：基本无月度费用（仅电费、硬件折旧）；
+- ✅ **阿里云 ECS + DashScope API 调用**：ECS 实例费用 + DashScope 的 Qwen-plus 调用 Token 计费（按千 token 收费）；
+- ✅ **自托管大模型（如本地运行 qwen-plus）**：需 GPU 服务器（如 A10/A100），成本显著上升；
+- ✅ **使用免费嵌入模型 + 本地 FAISS**：向量计算零 API 成本，但检索性能受限于 CPU。
+
+如果你愿意告诉我你的部署场景（比如：“我在阿里云上跑，用 DashScope API” 或 “我本地有 3090，想全离线运行”），我可以帮你粗略估算每月成本 😊",7231.26,,1,1.0,1.0,1.0,1.0
+q046,项目正式上线日期是哪一天？,False,当前知识库资料未提供该信息,,,0.0,63.72,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md,0,0,0,"根据你提供的【参考资料】，其中并没有提及项目的正式上线日期。
+
+这些资料主要涵盖的是技术实现细节（如后端框架、API 接口、文档处理流程）、配置说明（如端口、模型、环境变量）和用户使用指南（如支持的文件格式、多轮对话机制等），但**未包含项目发布时间、版本号或上线计划等运营/发布相关信息**。
+
+如果你有其他线索（比如 README、GitHub release 记录、内部公告等），我可以帮你一起分析 😊  
+需要我帮你梳理如何查找这类信息吗？",3026.05,,0,1.0,1.0,1.0,1.0
+q047,系统是否支持微信扫码登录？,False,当前知识库资料未提供该信息,,,0.0,81.55,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md,0,0,0,"目前的系统（Benchmark v2）**不支持微信扫码登录**。
+
+根据提供的参考资料，文档中完全没有提及任何关于用户认证、登录方式（如微信、手机号、邮箱、OAuth 等）的相关功能或配置说明。整个手册聚焦于 RAG 核心能力：文档上传与解析（TXT/Markdown/PDF/DOCX/CSV）、知识库构建、检索增强问答、会话上下文管理（via `session_id`）以及后端部署配置等。
+
+换句话说，这是一个以**本地知识库问答为核心**的轻量级 RAG 工具，暂未集成用户身份认证体系——包括微信扫码、账号密码、第三方登录等均不在当前版本的功能范围内。
+
+如需此类功能，后续可考虑在 FastAPI 后端扩展 OAuth2 或接入微信开放平台，但需额外开发与安全配置 😊  
+需要我帮你规划一个简单的登录扩展思路吗？",4679.3,,0,0.0,0.0,0.0,0.0
+q048,项目是否已经接入企业 SSO？,False,当前知识库资料未提供该信息,,,0.0,71.16,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,0,0,0,"目前的项目说明中**没有提到已接入企业 SSO（Single Sign-On）**。从提供的【参考资料】来看，所有内容均围绕 RAG 系统的核心功能展开，包括文档上传、向量检索、会话管理（`session_id`）、知识库持久化、评测指标等，但**未涉及用户认证、登录流程或与企业身份系统（如 LDAP、OAuth2、SAML、钉钉/企业微信/AD 域等）的集成**。
+
+换句话说：  
+✅ 支持多轮对话上下文（通过 `session_id`）  
+✅ 支持本地知识库构建与检索  
+❌ **暂无 SSO 相关设计或配置说明**  
+
+如果你有接入 SSO 的需求（例如统一登录、权限控制），这属于后续可扩展的安全增强模块，当前版本（Benchmark v2）尚未实现。需要的话，我可以帮你梳理常见的 SSO 集成方案（如 FastAPI + OAuth2 + Auth0 / Keycloak / 企业微信扫码登录等）😊
+
+需要我进一步说明吗？",5541.34,,0,1.0,1.0,1.0,1.0
+q049,系统的 SLA 可用性承诺是多少？,False,当前知识库资料未提供该信息,,,0.0,76.3,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md,0,0,0,"目前提供的资料中**没有提及系统的 SLA（Service Level Agreement，服务等级协议）或可用性承诺**（例如 99.9% uptime 等指标）。
+
+该项目文档聚焦于功能说明、部署配置、API 接口、评测指标和用户操作流程，属于一个本地可部署的 RAG（检索增强生成）原型系统或 Benchmark 工具，而非面向生产环境的 SaaS 服务——因此未定义或公开 SLA。
+
+如果你是在评估该系统用于实际业务场景，建议根据以下方面自行评估可用性：
+- 后端基于 FastAPI，轻量且稳定，单机部署下可用性取决于宿主机和依赖服务（如嵌入模型加载、向量索引读写）；
+- 无高可用（HA）、自动扩缩容或故障转移机制描述；
+- 知识库索引持久化（FAISS）和会话状态分离，清空记忆不影响索引，有利于稳定性；
+- 首次启动可能因下载模型有延迟，但后续运行较稳定。
+
+如需 SLA，通常需要在生产级部署中结合监控（如 Prometheus + Grafana）、进程守护（systemd / Docker restart policy）、负载均衡与备份策略来保障，并由运维团队定义内部 SLO（Service Level Objective）。
+
+需要我帮你设计一套简易的可用性监控/自检方案吗？ 😊",7395.38,,0,1.0,0.8,0.7,1.0
+q050,知识库管理员的默认账号密码是什么？,False,当前知识库资料未提供该信息,,,0.0,86.4,/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md | /Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md,0,0,0,"知识库管理员的默认账号密码在你提供的【参考资料】中**没有提及**。
+
+当前所有文档（用户手册、RAG 架构说明、部署与配置说明、API 说明）均未涉及系统登录认证、用户权限管理或管理员账户相关配置，这意味着：
+
+- 该 RAG 系统（Benchmark v2）**默认可能不包含内置的账号密码认证机制**；
+- 或者认证逻辑/默认凭据未在公开文档中说明（例如由反向代理、Nginx、或外部身份服务统一管理）；
+- `.env` 文件中也未列出 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 类配置项。
+
+✅ 建议操作：
+- 检查 `frontend/local_rag/.env` 文件中是否有相关认证配置；
+- 查看项目是否集成了如 FastAPI Users、Auth0、或自定义登录路由（当前参考资料未体现）；
+- 若为本地开发环境且无认证模块，可能直接免登录访问 Web 界面（如 http://127.0.0.1:8000）。
+
+需要我帮你分析 `.env` 示例结构，或推测常见轻量认证方案吗？ 😊",6187.78,,0,0.0,0.0,0.0,0.0

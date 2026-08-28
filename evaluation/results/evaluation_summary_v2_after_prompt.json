@@ -1,0 +1,41 @@
+{
+  "dataset": "/Users/killg/Desktop/knowledge-rag-chat/evaluation/eval_dataset.jsonl",
+  "corpus": [
+    "/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/rag_architecture.md",
+    "/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md",
+    "/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/user_manual.md",
+    "/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md"
+  ],
+  "questions": 50,
+  "answerable_questions": 40,
+  "unanswerable_questions": 10,
+  "chunks": 5,
+  "retrieval": {
+    "hit@1": 0.85,
+    "hit@3": 0.975,
+    "hit@5": 1.0,
+    "mrr": 0.9146
+  },
+  "latency": {
+    "retrieval": {
+      "avg_ms": 85.46,
+      "p50_ms": 83.07,
+      "p95_ms": 126.75
+    },
+    "end_to_end": {
+      "avg_ms": 1233.71,
+      "p50_ms": 883.89,
+      "p95_ms": 2603.17
+    }
+  },
+  "answering": {
+    "basic_correctness": 0.875,
+    "refusal_accuracy": 1.0
+  },
+  "llm_judge": {
+    "correctness": 0.99,
+    "faithfulness": 1.0,
+    "relevance": 0.996,
+    "safe_refusal": 1.0
+  }
+}
