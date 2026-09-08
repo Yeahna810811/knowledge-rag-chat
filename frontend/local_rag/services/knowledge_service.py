@@ -1,80 +1,112 @@
-from pathlib import Path
-from uuid import uuid4
+from __future__ import annotations
 
 from frontend.local_rag.config.settings import Settings, get_settings
+from frontend.local_rag.core.agents import AgentOrchestrator
 from frontend.local_rag.core.document_processor import DocumentProcessor
 from frontend.local_rag.core.embedding_service import EmbeddingService
-from frontend.local_rag.core.rag_chain import RAGChain
 from frontend.local_rag.core.vector_store import VectorStoreManager
-from frontend.local_rag.utils.file_utils import ensure_dir, is_supported_file
+from frontend.local_rag.utils.file_utils import ensure_dir
 
-MAX_HISTORY_TURNS = 10  # 每个会话最多保留的历史轮数，避免prompt无限增长
+MAX_HISTORY_TURNS = 10
 
 
 class KnowledgeService:
-    """知识库服务：实现文档导入、知识库问答（带多轮对话记忆）、状态查看与重置全流程业务逻辑"""
+    """知识库服务：多 Agent 协同完成入库、双模式问答、状态与会话管理。"""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.upload_dir = ensure_dir(settings.upload_dir)
-
-        self.embedding_service = EmbeddingService(settings)
-        self.vector_store_manager = VectorStoreManager(
-            settings, self.embedding_service.get_embeddings()
-        )
-        self.document_processor = DocumentProcessor(settings)
-        self.rag_chain = RAGChain(settings, self.vector_store_manager)
-
-        self.vector_store_manager.load()
-
-        # 按 session_id 维护多轮对话历史: {session_id: [{"question":..., "answer":...}, ...]}
         self._chat_histories: dict[str, list[dict]] = {}
 
+        # Lazy-init heavy components (embedding model / LLM) on first use.
+        self._embedding_service: EmbeddingService | None = None
+        self._vector_store_manager: VectorStoreManager | None = None
+        self._document_processor: DocumentProcessor | None = None
+        self._orchestrator: AgentOrchestrator | None = None
+        self._index_loaded = False
+
+    def _ensure_runtime(self) -> AgentOrchestrator:
+        if self._orchestrator is not None:
+            return self._orchestrator
+
+        self._embedding_service = EmbeddingService(self.settings)
+        self._vector_store_manager = VectorStoreManager(
+            self.settings, self._embedding_service.get_embeddings()
+        )
+        self._document_processor = DocumentProcessor(self.settings)
+        self._orchestrator = AgentOrchestrator(
+            settings=self.settings,
+            document_processor=self._document_processor,
+            vector_store_manager=self._vector_store_manager,
+            upload_dir=self.upload_dir,
+        )
+        if not self._index_loaded:
+            self._vector_store_manager.load()
+            self._index_loaded = True
+        return self._orchestrator
+
+    @property
+    def vector_store_manager(self) -> VectorStoreManager:
+        self._ensure_runtime()
+        assert self._vector_store_manager is not None
+        return self._vector_store_manager
+
+    @property
+    def orchestrator(self) -> AgentOrchestrator:
+        return self._ensure_runtime()
+
     def ingest_upload(self, filename: str, content: bytes) -> dict:
-        if not is_supported_file(filename):
-            raise ValueError(
-                "不支持该文件格式，仅支持：.txt、.md、.pdf、.docx、.csv"
-            )
+        return self.orchestrator.ingest(filename, content)
 
-        safe_name = f"{uuid4().hex}_{Path(filename).name}"
-        saved_path = self.upload_dir / safe_name
-        saved_path.write_bytes(content)
-
-        chunks = self.document_processor.process_file(saved_path)
-        chunk_count = self.vector_store_manager.add_documents(chunks)
-
-        return {
-            "filename": filename,
-            "saved_as": safe_name,
-            "chunk_count": chunk_count,
-            "message": "文档入库成功",
-        }
-
-    def ask(self, question: str, session_id: str = "default") -> dict:
+    def ask(
+        self,
+        question: str,
+        session_id: str = "default",
+        mode: str = "rag",
+    ) -> dict:
         question = question.strip()
         if not question:
             raise ValueError("问题内容不能为空")
 
         history = self._chat_histories.get(session_id, [])
+        result = self.orchestrator.ask(question, history=history, mode=mode)
 
-        # 知识库为空时依然可以正常聊天（退化为带记忆的普通AI助手，不强制要求先上传文档）
-        result = self.rag_chain.run(question, history=history)
-
-        # 更新该会话的历史记录
         history.append({"question": question, "answer": result["answer"]})
         self._chat_histories[session_id] = history[-MAX_HISTORY_TURNS:]
-
+        result["session_id"] = session_id
+        result["history_turns"] = len(self._chat_histories[session_id])
         return result
 
+    def get_history(self, session_id: str = "default") -> dict:
+        history = self._chat_histories.get(session_id, [])
+        return {"session_id": session_id, "history": history, "turns": len(history)}
+
     def status(self) -> dict:
+        ready = False
+        if self._vector_store_manager is not None:
+            ready = self._vector_store_manager.is_ready
+        else:
+            index_file = self.settings.faiss_index_dir / "index.faiss"
+            ready = index_file.exists()
+
         return {
-            "vector_store_ready": self.vector_store_manager.is_ready,
+            "vector_store_ready": ready,
             "upload_dir": str(self.upload_dir),
             "faiss_index_dir": str(self.settings.faiss_index_dir),
             "embedding_model": self.settings.embedding_model,
             "chat_model": self.settings.chat_model,
             "dashscope_configured": bool(self.settings.dashscope_api_key),
+            "langsmith_enabled": bool(
+                self.settings.langchain_tracing_v2 and self.settings.langchain_api_key
+            ),
             "active_sessions": len(self._chat_histories),
+            "agents": [
+                "document_parse_agent",
+                "retrieval_agent",
+                "generation_agent",
+            ],
+            "modes": ["rag", "chat"],
+            "runtime_initialized": self._orchestrator is not None,
         }
 
     def reset(self) -> dict:
@@ -84,3 +116,7 @@ class KnowledgeService:
     def clear_history(self, session_id: str = "default") -> dict:
         self._chat_histories.pop(session_id, None)
         return {"message": "对话记忆已清空"}
+
+
+def build_service(settings: Settings | None = None) -> KnowledgeService:
+    return KnowledgeService(settings or get_settings())

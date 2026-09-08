@@ -17,6 +17,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     ask_parser = subparsers.add_parser("ask", help="Ask a question")
     ask_parser.add_argument("question", type=str, help="Question text")
+    ask_parser.add_argument(
+        "--mode",
+        choices=["rag", "chat"],
+        default="rag",
+        help="rag=knowledge-base QA, chat=plain AI dialogue",
+    )
 
     subparsers.add_parser("status", help="Show knowledge base status")
     subparsers.add_parser("reset", help="Clear vector index")
@@ -40,9 +46,12 @@ def main() -> None:
         return
 
     if args.command == "ask":
-        result = service.ask(args.question)
+        result = service.ask(args.question, mode=args.mode)
+        print("\nMode:", result.get("mode", args.mode))
         print("\nQuestion:", result["question"])
         print("\nAnswer:", result["answer"])
+        if result.get("agent_trace"):
+            print("\nAgents:", " -> ".join(result["agent_trace"]))
         if result["sources"]:
             print("\nSources:")
             for idx, source in enumerate(result["sources"], start=1):

@@ -1,0 +1,3 @@
+# Optional evaluation extras (Ragas + datasets)
+ragas>=0.2.10
+datasets>=3.0.0

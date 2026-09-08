@@ -1,0 +1,23 @@
+{
+  "name": "knowledge-rag-web",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.4",
+    "marked": "^15.0.7",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/dompurify": "^3.2.0",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.7.2",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}

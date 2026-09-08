@@ -1,11 +1,13 @@
 # 密钥文件（绝对不能上传！）
 .env
+frontend/local_rag/.env
 
 # Python缓存
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
 
 # 虚拟环境
 venv/
@@ -13,8 +15,17 @@ venv/
 env/
 
 # 向量库、上传文件（本地数据，不上传）
-fronted/local_rag/data/faiss_index/
-fronted/local_rag/data/uploads/
+frontend/local_rag/data/faiss_index/
+frontend/local_rag/data/uploads/
+*.faiss
+*.pkl
+
+# Frontend
+frontend/web/node_modules/
+frontend/web/dist/
+
+# 本地备份
+frontend/local_rag/_backup/
 
 # IDE配置
 .vscode/

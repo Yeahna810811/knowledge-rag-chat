@@ -5,7 +5,6 @@ from langchain_community.document_loaders import (
     Docx2txtLoader,
     PyPDFLoader,
     TextLoader,
-    UnstructuredMarkdownLoader,
 )
 from langchain_core.documents import Document
 
@@ -16,10 +15,9 @@ def load_document(file_path: Path) -> list[Document]:
     """Load a local file into LangChain Document objects."""
     suffix = get_file_extension(file_path.name)
 
-    if suffix in {".txt"}:
+    if suffix in {".txt", ".md"}:
+        # Markdown uses TextLoader for fewer optional deps; structure is preserved for chunking.
         loader = TextLoader(str(file_path), encoding="utf-8")
-    elif suffix == ".md":
-        loader = UnstructuredMarkdownLoader(str(file_path))
     elif suffix == ".pdf":
         loader = PyPDFLoader(str(file_path))
     elif suffix == ".docx":
