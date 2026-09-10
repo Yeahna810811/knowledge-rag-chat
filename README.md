@@ -124,7 +124,8 @@ pip install -r evaluation/requirements-eval.txt
 python evaluation/evaluate_with_ragas.py --limit 10
 ```
 
-已沉淀结果见 `evaluation/results/`（Hit@3 97.5%、Hit@5 100%、MRR 91.46%；Prompt 优化后 Correctness / Faithfulness / SafeRefusal 显著提升）。
+检索策略的权威结论见 `evaluation/EVALUATION_AUDIT.md`：100 题 benchmark（80 可答）、70 chunk 语料（含 60 个取自本项目真实文档的难负样本 chunk），BM25 单路 Hit@1 0.850 / MRR 0.908，显著优于稠密路与等权混合（配对 bootstrap，p < 0.01）；入库 7.8ms vs 7071ms、查询 0.09ms vs 19.3ms。
+早期 5 chunk 语料 + Ragas 口径的旧结果仍留在 `evaluation/results/`，仅作历史对照，**不作为结论引用**（语料过小，随机基线 Hit@3 就有 60%）。
 
 ## 项目结构
 

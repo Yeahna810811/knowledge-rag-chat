@@ -456,9 +456,9 @@ def parse_args() -> argparse.Namespace:
         help="相关性判定指标。char=复刻 evaluate_rag.py 旧行为；bigram=推荐，假阳性更低。",
     )
     p.add_argument(
-        "--include-distractors",
+        "--include-noise",
         action="store_true",
-        help="把 evaluation/distractors 下的难负样本并入语料，降低评测天花板。",
+        help="并入 evaluation/extended_noise 下的难负样本（由 build_extended_corpus.py 生成），降低评测天花板。",
     )
     p.add_argument("--ks", type=int, nargs="+", default=[1, 3, 5])
     p.add_argument("--chunk-size", type=int, default=500)
@@ -482,8 +482,8 @@ def main() -> None:
     args = parse_args()
     dataset = load_dataset(args.dataset)
     corpus = [p.resolve() for p in args.corpus]
-    if args.include_distractors:
-        corpus += sorted((PROJECT_ROOT / "evaluation" / "distractors").glob("*.md"))
+    if args.include_noise:
+        corpus += sorted((PROJECT_ROOT / "evaluation" / "extended_noise").glob("*.md"))
     chunks = build_chunks(corpus, args.chunk_size, args.chunk_overlap)
     metric_fn = METRICS[args.metric]
 
@@ -492,7 +492,7 @@ def main() -> None:
     print(f"语料: {len(corpus)} 篇 -> {len(chunks)} 个 chunk (size={args.chunk_size}, overlap={args.chunk_overlap})")
     print(f"题目: 共 {len(dataset)} 题，可答 {sum(1 for r in dataset if r['answerable'])} 题")
     print(f"稠密路实现: {args.dense} | 相关性指标: {args.metric}")
-    print(f"难负样本: {'已并入' if args.include_distractors else '未使用'}")
+    print(f"难负样本: {'已并入' if args.include_noise else '未使用'}")
     print("=" * 78)
 
     tmp_holder = None
@@ -594,7 +594,7 @@ def main() -> None:
         "config": {
             "dense_impl": args.dense,
             "metric": args.metric,
-            "distractors": bool(args.include_distractors),
+            "noise_corpus": bool(args.include_noise),
             "chunk_size": args.chunk_size,
             "chunk_overlap": args.chunk_overlap,
             "chunks": len(chunks),

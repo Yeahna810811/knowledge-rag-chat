@@ -1,12 +1,12 @@
 """构建扩展语料：把项目自身文档作为真实噪声并入评测。
 
 为什么用项目自己的文档做干扰：
-- 它们是真实的工程文本，不是我编的假噪声，术语分布和真实知识库一致；
+- 它们是仓库里真实存在的工程文本，不是编造的假文档，术语分布与真实知识库一致；
 - 它们和评测语料同属一个项目，词汇高度重合，属于「难负样本」；
-- 零成本，直接就能拿到几十个 chunk。
+- 新增文档后重跑一次即可，噪声集始终与仓库同步，无需人工维护。
 
 关键步骤是**自动剔除污染块**：项目 README 里也会提到 FastAPI、8000 端口这些事实，
-如果某个 chunk 与任一 evidence 的 bigram 包含度 >= 0.85，检索到它会被误判为命中，
+如果某个 chunk 与任一 evidence 的 bigram 包含度太高，检索到它会被误判为命中，
 评测就虚高了。这类 chunk 必须剔掉，宁可少几个噪声也不能牺牲标签正确性。
 
 用法：
@@ -26,14 +26,23 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from evaluation.evaluate_retrieval_ab import build_chunks, token_containment
 
-THRESHOLD = 0.85
+# 判定「命中」用的是 0.85；构建噪声时用更严的 0.80 留出安全边际——
+# 包含度 0.80~0.85 的 chunk 一旦换个切分边界就可能越线，从「难负样本」
+# 变成「假阳性来源」，这类边缘块宁可不要。
+THRESHOLD = 0.80
 
-# 项目自身的文本：作为噪声并入。刻意排除了 HTML/JS 产物（噪音类型不匹配）。
+# 项目自身的文本：作为噪声并入。刻意排除 HTML/JS 产物（噪音类型不匹配），
+# 也排除 eval 数据集与评测语料本身（那是标准答案来源，不是噪声）。
 NOISE_SOURCES = [
     PROJECT_ROOT / "README.md",
     PROJECT_ROOT / "frontend" / "local_rag" / "README.md",
     PROJECT_ROOT / "frontend" / "local_rag" / "sample.txt",
+    PROJECT_ROOT / "frontend" / "local_rag" / "core" / "retrieval" / "README.md",
     PROJECT_ROOT / "evaluation" / "README.md",
+    # 刻意不把 EVALUATION_AUDIT.md 纳入噪声：
+    # 它是评测的产物而不是知识库文档，且正文引用了大量事实原文，
+    # 纳进来会形成「报告改数字 -> 语料变 -> 指标变」的自指循环，
+    # 也会带来跨文档污染的风险。评测报告应当只描述基准，不参与基准。
 ]
 
 OUTPUT_DIR = PROJECT_ROOT / "evaluation" / "extended_noise"
@@ -63,8 +72,10 @@ def main() -> None:
     evidences = load_all_evidences()
     print(f"载入 {len(evidences)} 条 evidence 用于污染剔除")
 
-    existing = sorted((PROJECT_ROOT / "evaluation" / "distractors").glob("*.md"))
-    sources = [p for p in NOISE_SOURCES if p.exists()] + existing
+    sources = [p for p in NOISE_SOURCES if p.exists()]
+    missing = [p.name for p in NOISE_SOURCES if not p.exists()]
+    if missing:
+        print(f"[警告] 以下噪声源不存在，已跳过：{missing}")
 
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)

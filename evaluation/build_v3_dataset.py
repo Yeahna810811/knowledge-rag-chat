@@ -85,7 +85,7 @@ def main() -> int:
     print()
     print("下一步：")
     print("  python evaluation/build_extended_corpus.py    # 用全量 evidence 重新剔除污染块")
-    print("  python evaluation/validate_distractors.py     # 确认 0 污染")
+    print("  python evaluation/validate_noise_corpus.py     # 确认 0 污染")
     return 0
 
 
