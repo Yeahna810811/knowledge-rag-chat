@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -77,11 +78,10 @@ def main() -> None:
     if missing:
         print(f"[警告] 以下噪声源不存在，已跳过：{missing}")
 
-    if OUTPUT_DIR.exists():
-        shutil.rmtree(OUTPUT_DIR)
-    OUTPUT_DIR.mkdir(parents=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     kept, dropped = 0, 0
+    written: set[str] = set()
     for src in sources:
         if src.suffix.lower() not in {".md", ".txt"}:
             continue
@@ -102,7 +102,17 @@ def main() -> None:
             prefix = src.parent.name or "root"
             name = f"{prefix}__{src.stem}__{i:03d}.md"
             (OUTPUT_DIR / name).write_text(piece, encoding="utf-8")
+            written.add(name)
             kept += 1
+
+    # 清理上一轮残留的 chunk：直接整目录删除既有性能问题、也可能误删，
+    # 这里改为把多余的旧文件移出到临时目录（可追溯，且不破坏当前语料）。
+    stale = [p for p in sorted(OUTPUT_DIR.glob("*.md")) if p.name not in written]
+    if stale:
+        backup = Path(tempfile.mkdtemp(prefix="rag_noise_stale_"))
+        for path in stale:
+            shutil.move(str(path), str(backup / path.name))
+        print(f"清理上一轮残留 {len(stale)} 个 chunk（已移到 {backup}）")
 
     print()
     print(f"扩展噪声语料：保留 {kept} 个 chunk，剔除 {dropped} 个污染块")

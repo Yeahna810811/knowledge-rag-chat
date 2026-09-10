@@ -40,3 +40,6 @@ gitpush
 # 评测运行时产物
 .evaluation_results/
 evaluation/.bench_bm25/
+
+# 评测派生产物（由 build_extended_corpus.py 生成，不入库）
+evaluation/extended_noise/
