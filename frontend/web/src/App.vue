@@ -156,9 +156,16 @@
           />
           <div class="actions">
             <button class="ghost" type="button" @click="onClearHistory" :disabled="busy">清空记录</button>
-            <button class="send" type="button" @click="onAsk" :disabled="busy || !draft.trim()">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
-              {{ busy ? "处理中…" : "发送" }}
+            <button
+              class="send"
+              :class="{ stop: asking }"
+              type="button"
+              @click="asking ? stopGeneration() : onAsk()"
+              :disabled="asking ? false : busy || !draft.trim()"
+            >
+              <svg v-if="!asking" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
+              <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+              {{ asking ? "停止" : "发送" }}
             </button>
           </div>
         </div>
@@ -194,6 +201,7 @@ interface ChatMessage {
 const mode = ref<ChatMode>("rag");
 const draft = ref("");
 const busy = ref(false);
+const asking = ref(false);
 const error = ref("");
 const uploadTip = ref("");
 const uploadOk = ref(false);
@@ -202,6 +210,7 @@ const status = ref<StatusResponse | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const chatBox = ref<HTMLElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
+const controller = ref<AbortController | null>(null);
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -303,14 +312,19 @@ async function onAsk() {
   const question = draft.value.trim();
   if (!question) return;
   busy.value = true;
+  asking.value = true;
   error.value = "";
   messages.value.push({ role: "user", content: question });
   draft.value = "";
+  // 强制同步清空输入框 DOM，防止输入法缓冲/默认行为把文字回填
+  const ta = document.querySelector(".composer textarea") as HTMLTextAreaElement | null;
+  if (ta) ta.value = "";
   await nextTick();
   autoGrow();
   await scrollToBottom();
+  controller.value = new AbortController();
   try {
-    const result = await askQuestion(question, mode.value);
+    const result = await askQuestion(question, mode.value, controller.value.signal);
     messages.value.push({
       role: "assistant",
       content: result.answer,
@@ -319,18 +333,30 @@ async function onAsk() {
     });
     await refreshStatus();
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-    messages.value.push({
-      role: "assistant",
-      content: `请求失败：${error.value}`,
-    });
+    if ((e as Error)?.name === "AbortError") {
+      messages.value.push({ role: "assistant", content: "已停止生成。" });
+    } else {
+      error.value = e instanceof Error ? e.message : String(e);
+      messages.value.push({
+        role: "assistant",
+        content: `请求失败：${error.value}`,
+      });
+    }
   } finally {
     busy.value = false;
+    asking.value = false;
+    controller.value = null;
     await scrollToBottom();
   }
 }
 
+function stopGeneration() {
+  controller.value?.abort();
+}
+
 function onKeydown(event: KeyboardEvent) {
+  // 中文输入法组合中（拼音/候选词未上屏）按 Enter 是选词确认，不是发送
+  if (event.isComposing || event.keyCode === 229) return;
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     void onAsk();
