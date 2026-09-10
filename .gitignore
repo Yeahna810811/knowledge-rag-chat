@@ -33,3 +33,10 @@ frontend/local_rag/_backup/
 
 # Mac系统垃圾文件
 .DS_Store
+
+# 本地个人工具（依赖本机代理环境，不上传）
+gitpush
+
+# 评测运行时产物
+.evaluation_results/
+evaluation/.bench_bm25/

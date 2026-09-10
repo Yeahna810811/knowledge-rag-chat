@@ -32,6 +32,19 @@ class Settings(BaseSettings):
     chunk_overlap: int = 50
     retrieval_top_k: int = 4
 
+    # ---- 检索策略 ----
+    # dense  = 纯 FAISS 向量（v1 原始行为）
+    # bm25   = BM25 主导 + 稠密兜底（默认，依据见 evaluation/EVALUATION_AUDIT.md）
+    # hybrid = RRF 融合两路（实验用，实测不优于 bm25）
+    retrieval_mode: str = "bm25"
+    # BM25 主导模式下，是否允许在稀疏路零命中时回落到稠密路
+    retrieval_dense_fallback: bool = True
+    # 纯 BM25 模式下跳过 embedding 模型加载（冷启动不再依赖模型文件）
+    retrieval_lazy_dense: bool = True
+    # hybrid 模式下 BM25 相对稠密路的 RRF 权重
+    hybrid_bm25_weight: float = 1.0
+    hybrid_dense_weight: float = 1.0
+
     # ---- LangSmith 可观测性（可选） ----
     langchain_tracing_v2: bool = False
     langchain_api_key: str = ""
@@ -44,6 +57,7 @@ class Settings(BaseSettings):
     # ---- 存储路径（绝对路径，不受启动时所在目录影响） ----
     upload_dir: Path = PACKAGE_DIR / "data" / "uploads"
     faiss_index_dir: Path = PACKAGE_DIR / "data" / "faiss_index"
+    bm25_index_dir: Path = PACKAGE_DIR / "data" / "bm25_index"
 
     # ---- 服务 ----
     host: str = "0.0.0.0"

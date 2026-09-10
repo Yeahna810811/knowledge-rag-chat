@@ -1,163 +1,126 @@
-# 检索增强层（Hybrid Retrieval）
+# 检索层（稀疏 / 稠密 / 混合）
 
-BM25 稀疏检索 + 稠密向量检索 → RRF 融合 → 可选重排。
-对外接口与 `VectorStoreManager.search()` 完全一致，可零改动替换。
+**当前生产默认：`retrieval_mode = bm25`（BM25 主导 + 稠密兜底）。**
+
+这个结论是实测出来的，不是拍脑袋定的。融合层（hybrid）作为可选项完整保留，
+但在本项目的语料和 embedding 模型下**没有展现出显著收益**，所以默认不启用。
+依据见 `evaluation/EVALUATION_AUDIT.md`。
+
+---
+
+## 目录结构
 
 ```
 frontend/local_rag/core/retrieval/
-├── tokenizer.py         # 中文不分词，unigram + bigram
-├── bm25.py              # 纯 Python BM25，零依赖
-├── fusion.py            # RRF 融合
-├── rerank.py            # NoOp / MMR / CrossEncoder
-└── hybrid_retriever.py  # 统一入口
+├── tokenizer.py             # 中文不分词，unigram + bigram；NFKC 归一
+├── bm25.py                  # 纯 Python BM25，零第三方依赖
+├── fusion.py                # RRF 融合 + 轮询对照
+├── rerank.py                # NoOp / MMR / CrossEncoder
+├── hybrid_retriever.py      # 两路 RRF 融合（实验用）
+├── lexical_store.py         # 持久化 BM25 索引（JSON 落盘）
+├── knowledge_retriever.py   # 生产入口：按模式路由 + 降级
+└── protocol.py              # RetrievalStore 协议，解耦 Agent 与实现
 ```
 
-单测：`python tests/test_retrieval.py`（26 项，无需任何第三方依赖）
-
----
-
-## 为什么需要它
-
-原评测数据：`Hit@3 = 97.5%`，但 `Hit@1 = 85%`、`MRR = 0.9146`。
-说明正确片段**基本都被召回了，但经常排在第 2~3 位被干扰片段压着**。
-
-稠密检索的短板恰好是 BM25 的强项：型号、编号、API 名、错误码、端口号这些
-必须精确匹配的字符串，在向量空间里 `qwen-plus` 和 `qwen-max` 距离极近，
-业务上却完全是两回事。两路错误模式不相关，融合后互相补位。
-
----
-
-## 接入步骤（3 处改动）
-
-### 改动 1：`services/knowledge_service.py` —— 持有检索器
-
-```python
-from frontend.local_rag.core.retrieval import (
-    HybridConfig, HybridRetriever, MMRReranker, NoOpReranker,
-)
-
-class KnowledgeService:
-    def __init__(self, settings: Settings) -> None:
-        ...
-        self._hybrid: HybridRetriever | None = None
-
-    def _ensure_runtime(self) -> AgentOrchestrator:
-        if self._orchestrator is not None:
-            return self._orchestrator
-        ...
-        # 在 AgentOrchestrator 构造之前插入：
-        self._hybrid = HybridRetriever(
-            dense_search=self._vector_store_manager.search,
-            config=HybridConfig(candidate_pool=20),
-            reranker=MMRReranker(lambda_param=0.7),   # 或 NoOpReranker() 先不重排
-        )
-        self._orchestrator = AgentOrchestrator(
-            settings=self.settings,
-            document_processor=self._document_processor,
-            vector_store_manager=self._vector_store_manager,
-            upload_dir=self.upload_dir,
-            hybrid_retriever=self._hybrid,            # 新增参数
-        )
-        if not self._index_loaded:
-            self._vector_store_manager.load()
-            self._index_loaded = True
-            self._rebuild_sparse_index()              # 新增
-        return self._orchestrator
-```
-
-### 改动 2：入库后重建稀疏索引
-
-稀疏索引存在内存里，进程重启或新增文档都要重建。
-
-```python
-    def _rebuild_sparse_index(self) -> None:
-        """用 FAISS 里的全部 chunk 重建 BM25 索引。"""
-        if self._hybrid is None or not self._vector_store_manager.is_ready:
-            return
-        store = self._vector_store_manager
-        # 取一个足够大的 K 把全库捞出来；知识库很大时应改为直接遍历 docstore
-        chunks = store.search("", k=10000)
-        self._hybrid.index(chunks)
-
-    def ingest_upload(self, filename: str, content: bytes) -> dict:
-        result = self.orchestrator.ingest(filename, content)
-        self._rebuild_sparse_index()      # 新增
-        return result
-
-    def reset(self) -> dict:
-        self.vector_store_manager.clear()
-        if self._hybrid is not None:
-            self._hybrid.index([])        # 新增：清空稀疏索引
-        return {"message": "知识库已全部清空"}
-```
-
-> **已知待优化**：`store.search("", k=10000)` 是用一次向量检索把全库捞出来，
-> 属于权宜之计。正确做法是给 `VectorStoreManager` 增加 `list_all_documents()`
-> 直接遍历 FAISS 的 `docstore`，避免无意义的一次 embedding。这是 v2.1 的 TODO。
-
-### 改动 3：`core/agents/retrieval_agent.py` —— 走混合检索
-
-```python
-class RetrievalAgent(BaseAgent):
-    name = "retrieval_agent"
-
-    def __init__(self, vector_store_manager, top_k=4, hybrid_retriever=None):
-        self.vector_store_manager = vector_store_manager
-        self.top_k = top_k
-        self.hybrid_retriever = hybrid_retriever
-
-    @traceable(name="retrieval_agent", run_type="retriever")
-    def run(self, question="", top_k=None, **_):
-        k = top_k or self.top_k
-        if not question.strip():
-            return AgentResult(agent=self.name, success=False, message="问题为空")
-        if not self.vector_store_manager.is_ready:
-            return AgentResult(agent=self.name, success=True, message="知识库尚未就绪",
-                               data={"sources": [], "ready": False})
-
-        # 混合检索优先；未启用或降级时自动回退到纯稠密
-        search_fn = self.vector_store_manager.search
-        if self.hybrid_retriever is not None and self.hybrid_retriever.is_ready:
-            search_fn = self.hybrid_retriever.search
-
-        sources = search_fn(question, k)
-        return AgentResult(agent=self.name, success=True,
-                           message=f"检索到 {len(sources)} 条相关片段",
-                           data={"sources": sources, "ready": True, "top_k": k,
-                                 "degraded": getattr(self.hybrid_retriever, "degraded", False)})
-```
-
-`orchestrator.py` 里把 `hybrid_retriever` 透传给 `RetrievalAgent` 即可。
-
----
-
-## 参数建议
-
-| 参数 | 默认 | 什么时候调 |
-|---|---|---|
-| `candidate_pool` | 20 | 知识库越大越要调大，但重排开销随之上升 |
-| `bm25_weight` / `dense_weight` | 1.0 / 1.0 | 用 `--sweep-weights` 在自己的评测集上扫；术语密集型知识库可给 BM25 加权 |
-| `rrf_k` | 60 | 一般不动。调小 → 更看重头部排名；调大 → 更看重"被几路召回" |
-| `MMRReranker.lambda_param` | 0.7 | chunk_overlap 大、Top-K 里重复多时调小 |
-
----
-
-## 已验证 / 未验证
-
-**已验证**（`python tests/test_retrieval.py`，26 项全过）
-- BM25 排序、长度归一、词频饱和（k1）
-- RRF 的并集语义、权重、结果确定性
-- 稠密路异常时自动降级且不抛异常
-- MMR 去冗余与上游相关性分的接入
-
-**未验证**（本机缺依赖 + 无 DASHSCOPE_API_KEY，需要你补跑）
-- bge-small-zh + FAISS 的真实融合收益
-- CrossEncoder 重排的延迟与收益
-- 大知识库下 `_rebuild_sparse_index` 的耗时
-
-真实 A/B 请跑：
+单测：
 
 ```bash
-python evaluation/evaluate_retrieval_ab.py --dense faiss --metric bigram \
-    --corpus evaluation/corpus/*.md evaluation/extended_noise/*.md
+python tests/test_retrieval.py            # 26 项，检索算法
+python tests/test_knowledge_retriever.py  # 38 项，门面 / 持久化 / 降级 / 迁移
 ```
+
+两者都不需要任何第三方依赖，秒级跑完。
+
+---
+
+## 三种模式
+
+| 模式 | 行为 | 适用 |
+|---|---|---|
+| `bm25`（默认） | BM25 主导；零命中时回落稠密 | 生产 |
+| `dense` | 纯 FAISS 向量 | v1 行为，用于 A/B 与回滚 |
+| `hybrid` | 两路 RRF 融合 | 实验；换更强 embedding 后可重新评估 |
+
+配置（`frontend/local_rag/.env` 或环境变量）：
+
+```env
+RETRIEVAL_MODE=bm25
+RETRIEVAL_DENSE_FALLBACK=true    # BM25 零命中时是否回落到稠密
+RETRIEVAL_LAZY_DENSE=true        # 纯 BM25 且索引已落盘时，跳过 embedding 模型加载
+HYBRID_BM25_WEIGHT=1.0
+HYBRID_DENSE_WEIGHT=1.0
+```
+
+---
+
+## 为什么默认不是混合检索
+
+100 题 benchmark（80 可答）、59 chunk 语料、真实 bge-small-zh 向量，
+配对 bootstrap 10000 轮，对照 bm25 单路：
+
+| 对比 | ΔMRR（原始问法） | 95% CI | p | ΔMRR（口语化问法） | 结论 |
+|---|---|---|---|---|---|
+| dense | −0.2983 | [−0.3935, −0.2025] | 0.000 | −0.1304（p=0.008） | **显著更差** |
+| hybrid 1:1 | −0.1454 | [−0.2202, −0.0767] | 0.000 | −0.0319（不显著） | **不涨点，且原始问法下更差** |
+| hybrid 2:1 | −0.1069 | [−0.1750, −0.0460] | 0.019 | +0.0031（不显著） | 同上 |
+
+结论：**BM25 显著优于稠密路**（两种问法都显著）；
+**混合检索在任何权重下都没有显著收益**，因此不值得为它多维护一套索引和调参。
+
+口语化问法下 BM25 的 MRR 从 0.924 掉到 0.381，说明真正的瓶颈是
+**词汇不匹配**——下一步该做查询改写 / HyDE，而不是继续调检索器权重。
+
+---
+
+## 工程要点
+
+**1. BM25 索引必须持久化，否则等于没做。**
+FAISS 能落盘，如果稀疏索引只在内存里，服务一重启就退回纯稠密，
+提升只在「入库完到重启前」有效。`LexicalStore` 用 JSON 落盘 + 原子写，
+加载时重建倒排（54 chunk 重建约 85ms）。
+
+**2. 用 JSON 不用 pickle。**
+pickle 反序列化等于任意代码执行。FAISS 那边的
+`allow_dangerous_deserialization=True` 已经是妥协，这里没必要再开口子。
+BM25 的倒排可以从原文无损重建，存原文就够了。
+
+**3. 老部署自动迁移。**
+已有 FAISS 索引但没有稀疏索引时，`_migrate_from_dense()` 会从
+FAISS docstore 导出原文补建。读的是私有 API，整段包 try/except——
+读不到最多不迁移，不能让服务起不来。
+
+**4. `/status` 刻意不触发 runtime 初始化。**
+它是健康检查入口，被探针频繁调用。若触发 embedding 模型加载，
+冷启动会把健康检查拖到几十秒，容器里会被 liveness probe 判死。
+
+**5. 三级降级。**
+稀疏路异常 → 回落稠密；稠密路异常 → 记 warning 继续用稀疏；
+两路都不可用 → 返回空列表（与「知识库为空」行为一致，generation_agent 已处理）。
+降级状态通过 `KnowledgeRetriever.degraded` 暴露，可接监控。
+
+---
+
+## 实测收益
+
+54 chunk、40 条查询（`python evaluation/benchmark_runtime.py`）：
+
+| 指标 | BM25 | 稠密 | 倍数 |
+|---|---|---|---|
+| 冷启动（加载模型） | 0 ms | 360 ms | — |
+| 入库 54 chunk | 8.12 ms | 6735.65 ms | 829× |
+| 单条查询 | 0.12 ms | 21.62 ms | 181× |
+
+**说明**：稠密路用的是 `evaluation/local_bge_embedder.py`（numpy 手写 BERT，
+加载真实权重），生产有 torch/ONNX 加速，绝对倍数会收敛；
+但「入库要跑 N 次 BERT 前向」是结构性差异，量级差距不会消失。
+冷启动 360ms 还是权重已在缓存的情况，首次部署另需下载约 95MB 模型。
+
+---
+
+## 已知局限
+
+- 稠密路与稀疏路通过 **content 文本**做映射，知识库里存在两段完全相同的文本时
+  metadata 可能指向另一处。修复方案是入库时写入 `chunk_id` 元数据按 id 映射。
+- BM25 对**词汇完全不重叠**的提问无能为力（这是它掉到 0.381 的原因），
+  靠 `RETRIEVAL_DENSE_FALLBACK` 兜底只是缓解，根治要靠查询改写。
+- 语料规模仍在几十 chunk 量级，结论外推到万级语料需要重新评测。

@@ -8,19 +8,19 @@ from langsmith import traceable
 
 from frontend.local_rag.core.agents.base import AgentResult, BaseAgent
 from frontend.local_rag.core.document_processor import DocumentProcessor
-from frontend.local_rag.core.vector_store import VectorStoreManager
+from frontend.local_rag.core.retrieval.protocol import RetrievalStore
 from frontend.local_rag.utils.file_utils import ensure_dir, is_supported_file
 
 
 class DocumentParseAgent(BaseAgent):
-    """Parse uploaded documents, chunk text, and write embeddings into FAISS."""
+    """Parse uploaded documents, chunk text, and write into the retrieval store."""
 
     name = "document_parse_agent"
 
     def __init__(
         self,
         document_processor: DocumentProcessor,
-        vector_store_manager: VectorStoreManager,
+        vector_store_manager: RetrievalStore,
         upload_dir: Path,
     ) -> None:
         self.document_processor = document_processor

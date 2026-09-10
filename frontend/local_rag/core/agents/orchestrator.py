@@ -10,7 +10,7 @@ from frontend.local_rag.core.agents.document_agent import DocumentParseAgent
 from frontend.local_rag.core.agents.generation_agent import GenerationAgent
 from frontend.local_rag.core.agents.retrieval_agent import RetrievalAgent
 from frontend.local_rag.core.document_processor import DocumentProcessor
-from frontend.local_rag.core.vector_store import VectorStoreManager
+from frontend.local_rag.core.retrieval.protocol import RetrievalStore
 
 
 class AgentOrchestrator:
@@ -20,7 +20,7 @@ class AgentOrchestrator:
         self,
         settings: Settings,
         document_processor: DocumentProcessor,
-        vector_store_manager: VectorStoreManager,
+        vector_store_manager: RetrievalStore,
         upload_dir: Path,
     ) -> None:
         self.settings = settings

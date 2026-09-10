@@ -5,15 +5,20 @@ from typing import Any, Optional
 from langsmith import traceable
 
 from frontend.local_rag.core.agents.base import AgentResult, BaseAgent
-from frontend.local_rag.core.vector_store import VectorStoreManager
+from frontend.local_rag.core.retrieval.protocol import RetrievalStore
 
 
 class RetrievalAgent(BaseAgent):
-    """Top-K semantic retrieval over the local FAISS knowledge base."""
+    """Top-K retrieval over the knowledge base (dense / sparse / hybrid).
+
+    依赖的是 RetrievalStore 协议而非具体实现，所以传入
+    VectorStoreManager（纯向量）或 KnowledgeRetriever（按模式路由）都可以，
+    检索策略的变化不会波及这一层。
+    """
 
     name = "retrieval_agent"
 
-    def __init__(self, vector_store_manager: VectorStoreManager, top_k: int = 4) -> None:
+    def __init__(self, vector_store_manager: RetrievalStore, top_k: int = 4) -> None:
         self.vector_store_manager = vector_store_manager
         self.top_k = top_k
 
