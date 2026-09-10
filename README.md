@@ -136,6 +136,12 @@ knowledge-rag-chat/
 ├── docker-compose.yml
 ├── .github/workflows/ci.yml
 ├── evaluation/
+│   ├── EVALUATION_AUDIT.md        # 检索策略选型的审计报告（权威结论）
+│   ├── evaluate_retrieval_ab.py   # 检索策略 A/B 实验台
+│   ├── significance_test.py       # 配对 bootstrap / 符号检验 / McNemar
+│   ├── build_extended_corpus.py   # 用真实文档生成难负样本语料
+│   ├── validate_noise_corpus.py   # 噪声语料污染校验
+│   ├── benchmark_runtime.py       # 入库 / 查询 / 冷启动性能对比
 │   ├── evaluate_rag.py
 │   ├── evaluate_with_ragas.py
 │   └── results/
@@ -145,5 +151,6 @@ knowledge-rag-chat/
         ├── app.py
         ├── api/routes.py
         ├── core/agents/     # 多 Agent 调度
+        ├── core/retrieval/  # 检索门面：dense / bm25 / hybrid 三模式 + 持久化稀疏索引
         └── services/
 ```
