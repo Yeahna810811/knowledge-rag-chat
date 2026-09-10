@@ -80,23 +80,91 @@ REWRITTEN: dict[str, str] = {
 }
 
 
+# v3 新增 50 题的口语化改写（id -> 改写）
+EXTRA_REWRITTEN: dict[str, str] = {
+    "q051": "页面那层是用什么写的？",
+    "q052": "打包构建用的是哪个工具？",
+    "q053": "构建完的文件落在哪个文件夹？",
+    "q054": "想把前端跑起来要敲哪些命令？",
+    "q055": "回答内容能显示富文本吗，用的什么语法？",
+    "q056": "显示用户内容之前做了什么防注入处理？",
+    "q057": "界面上能切哪两种对话方式？",
+    "q058": "怎么让系统知道我这几句话属于同一轮对话？",
+    "q059": "打镜像用的是哪个文件，分几步？",
+    "q060": "多个服务一起起，靠哪个配置文件？",
+    "q061": "自动化的流水线配置放在哪个文件？",
+    "q062": "流水线一共分成哪几个环节？",
+    "q063": "跑后端检查时用的是哪个 Python 版本？",
+    "q064": "打包前端时用的 Node 是几？",
+    "q065": "构建镜像那一步要等哪两步先过？",
+    "q066": "外部系统要触发任务，调哪个地址？",
+    "q067": "回调带的密钥不对，对方会收到什么？",
+    "q068": "想看每次调用的完整链路，要接什么？",
+    "q069": "跑检索指标的是哪个脚本？",
+    "q070": "题目和答案放在哪个文件里？",
+    "q071": "有多少题是故意答不上来、用来测拒答的？",
+    "q072": "评价召回好坏主要看哪两个数？",
+    "q073": "用 Ragas 主要看回答的哪两方面？",
+    "q074": "一条问答会依次经过哪几个处理单元？",
+    "q075": "返回结果里哪个字段记录了走过的步骤？",
+    "q076": "资料里压根没这回事的时候，系统会怎么回？",
+    "q077": "耗时方面会分别记录哪两个数字？",
+    "q078": "聊多了会不会忘，最多能记几轮？",
+    "q079": "传两个名字一样的文件会打架吗？",
+    "q080": "我传上去的文件存哪了？",
+    "q081": "索引文件写在哪个文件夹？",
+    "q082": "再加一份资料，之前的索引要推倒重来吗？",
+    "q083": "只清聊天记录，会不会连资料一起没？",
+    "q084": "点那个清空知识，会动到哪些数据？",
+    "q085": "做清洗用的那个库是哪个版本？",
+    "q086": "密钥要通过哪个 header 传过去？",
+    "q087": "要设哪几个环境变量才能开追踪？",
+    "q088": "题目集默认有多少道？",
+    "q089": "前端代码放在哪个文件夹里？",
+    "q090": "Vite 里负责解析 Vue 文件的插件叫啥？",
+    "q091": "能在微信里直接用吗？",
+    "q092": "关系型数据用的是哪种数据库？",
+    "q093": "不同公司的数据能隔开吗？",
+    "q094": "答案能念出来吗？",
+    "q095": "监控指标接到 Prometheus 了吗？",
+    "q096": "一个库最多能塞几份资料？",
+    "q097": "能按角色限制谁能看到什么吗？",
+    "q098": "上 K8s 有现成的编排文件吗？",
+    "q099": "能把库里的内容导成 PDF 吗？",
+    "q100": "回答是一个字一个字往外蹦吗？",
+}
+
+
 def main() -> None:
-    src = PROJECT_ROOT / "evaluation" / "eval_dataset.jsonl"
-    dst = PROJECT_ROOT / "evaluation" / "eval_dataset_oral.jsonl"
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--dataset",
+        default="evaluation/eval_dataset_v3.jsonl",
+        help="默认对 v3 全量 100 题做改写；传 eval_dataset.jsonl 则只处理原 50 题",
+    )
+    ap.add_argument("--out", default="evaluation/eval_dataset_oral_v3.jsonl")
+    args = ap.parse_args()
+
+    src = PROJECT_ROOT / args.dataset
+    dst = PROJECT_ROOT / args.out
+    table = {**REWRITTEN, **EXTRA_REWRITTEN}
 
     rows = [json.loads(line) for line in src.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-    missing = [r["id"] for r in rows if r["id"] not in REWRITTEN]
+    missing = [r["id"] for r in rows if r["id"] not in table]
     if missing:
         raise KeyError(f"以下题目缺少改写：{missing}")
 
     before, after = [], []
     for row in rows:
         evidence = str(row.get("evidence", "")).strip()
+        rewritten = table[row["id"]]
         if evidence:
             before.append(_overlap(row["question"], evidence))
-            after.append(_overlap(REWRITTEN[row["id"]], evidence))
-        row["question"] = REWRITTEN[row["id"]]
+            after.append(_overlap(rewritten, evidence))
+        row["question"] = rewritten
         row["question_style"] = "oral"
 
     with dst.open("w", encoding="utf-8") as f:

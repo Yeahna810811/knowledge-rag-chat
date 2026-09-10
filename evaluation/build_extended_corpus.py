@@ -39,19 +39,29 @@ NOISE_SOURCES = [
 OUTPUT_DIR = PROJECT_ROOT / "evaluation" / "extended_noise"
 
 
+def load_all_evidences() -> list[str]:
+    """读取所有 eval_dataset*.jsonl 的 evidence。
+
+    为什么用 glob 而不是写死一个文件：v3 扩题后有了 eval_dataset_extra.jsonl，
+    如果只按原来的 50 条 evidence 剔除污染，新增题目对应的原文块会漏网——
+    噪声语料里留着标准答案，评测就会虚高。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for path in sorted((PROJECT_ROOT / "evaluation").glob("eval_dataset*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            ev = str(json.loads(line).get("evidence", "")).strip()
+            if ev and ev not in seen:
+                seen.add(ev)
+                out.append(ev)
+    return out
+
+
 def main() -> None:
-    dataset = [
-        json.loads(line)
-        for line in (
-            PROJECT_ROOT / "evaluation" / "eval_dataset.jsonl"
-        ).read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    evidences = [
-        str(row.get("evidence", "")).strip()
-        for row in dataset
-        if str(row.get("evidence", "")).strip()
-    ]
+    evidences = load_all_evidences()
+    print(f"载入 {len(evidences)} 条 evidence 用于污染剔除")
 
     existing = sorted((PROJECT_ROOT / "evaluation" / "distractors").glob("*.md"))
     sources = [p for p in NOISE_SOURCES if p.exists()] + existing

@@ -1,0 +1,100 @@
+{"id": "q001", "question": "这个项目使用什么向量索引？", "reference_answer": "FAISS", "evidence": "向量索引使用 FAISS，并将索引持久化到本地磁盘。", "source_contains": "rag_architecture.md", "answerable": true}
+{"id": "q002", "question": "文本向量由什么组件生成？", "reference_answer": "Sentence-Transformers", "evidence": "系统使用 Sentence-Transformers 生成文本向量，当前默认嵌入模型为 BAAI/bge-small-zh-v1.5。", "source_contains": "rag_architecture.md", "answerable": true}
+{"id": "q003", "question": "当前默认嵌入模型是什么？", "reference_answer": "BAAI/bge-small-zh-v1.5", "evidence": "当前默认嵌入模型为 BAAI/bge-small-zh-v1.5。", "source_contains": "rag_architecture.md", "answerable": true}
+{"id": "q004", "question": "系统使用什么工具切分文档？", "reference_answer": "RecursiveCharacterTextSplitter", "evidence": "文档切分使用 LangChain 的 RecursiveCharacterTextSplitter。", "source_contains": "rag_architecture.md", "answerable": true}
+{"id": "q005", "question": "当前 CHUNK_SIZE 和 CHUNK_OVERLAP 分别是多少？", "reference_answer": "500 和 50", "evidence": "当前文本切分参数为 CHUNK_SIZE=500，CHUNK_OVERLAP=50。", "source_contains": "rag_architecture.md", "answerable": true}
+{"id": "q006", "question": "用户提交知识问答后，检索阶段首先做什么？", "reference_answer": "把问题编码为查询向量，再从 FAISS 检索相关文本块", "evidence": "用户提交知识问答请求后，系统先把问题编码为查询向量，再从 FAISS 中检索相关文本块。", "source_contains": "rag_architecture.md", "answerable": true}
+{"id": "q007", "question": "RAG 默认最多返回几个候选文本块？", "reference_answer": "4 个", "evidence": "当前 RETRIEVAL_TOP_K=4，因此每次知识检索默认最多返回 4 个候选文本块。", "source_contains": "rag_architecture.md", "answerable": true}
+{"id": "q008", "question": "检索上下文之后会交给哪个模型生成答案？", "reference_answer": "Qwen", "evidence": "检索出的上下文会和用户问题一起组成 RAG Prompt，并交给 Qwen 生成最终答案。", "source_contains": "rag_architecture.md", "answerable": true}
+{"id": "q009", "question": "项目通过什么字段区分不同对话会话？", "reference_answer": "session_id", "evidence": "项目通过 session_id 区分不同对话会话。", "source_contains": "rag_architecture.md", "answerable": true}
+{"id": "q010", "question": "当前系统是否启用了 BM25 混合检索？", "reference_answer": "没有", "evidence": "当前检索方式为单路稠密向量检索，没有启用 BM25 混合检索，也没有接入独立的 Cross-Encoder Reranker。", "source_contains": "rag_architecture.md", "answerable": true}
+{"id": "q011", "question": "这个项目的后端框架是什么？", "reference_answer": "FastAPI", "evidence": "本项目后端框架为 FastAPI。", "source_contains": "api_guide.md", "answerable": true}
+{"id": "q012", "question": "后端默认监听哪个端口？", "reference_answer": "8000", "evidence": "后端默认监听端口为 8000。", "source_contains": "api_guide.md", "answerable": true}
+{"id": "q013", "question": "上传文档后后端会进行哪些主要处理？", "reference_answer": "文档读取、文本切分、向量生成和 FAISS 索引更新", "evidence": "用户上传文档后，后端会依次完成文档读取、文本切分、向量生成和 FAISS 索引更新。", "source_contains": "api_guide.md", "answerable": true}
+{"id": "q014", "question": "RAG 问答接口能否携带 session_id？", "reference_answer": "可以", "evidence": "RAG 问答接口可以携带 session_id，用于关联多轮对话上下文。", "source_contains": "api_guide.md", "answerable": true}
+{"id": "q015", "question": "RAG 返回结果除了 answer 还可以包含什么？", "reference_answer": "sources", "evidence": "RAG 返回结果除了 answer 外，还可以包含 sources，用于展示回答所依据的知识来源。", "source_contains": "api_guide.md", "answerable": true}
+{"id": "q016", "question": "普通聊天和 RAG 问答的核心区别是什么？", "reference_answer": "普通聊天不强制检索知识库，RAG 问答会先检索知识库", "evidence": "普通聊天模式不强制执行知识库检索；RAG 问答模式会先检索知识库，再基于检索上下文生成回答。", "source_contains": "api_guide.md", "answerable": true}
+{"id": "q017", "question": "清空对话记忆会删除知识库索引吗？", "reference_answer": "不会", "evidence": "清空对话记忆只会删除会话历史，不会删除已经构建的知识库索引。", "source_contains": "api_guide.md", "answerable": true}
+{"id": "q018", "question": "项目根目录通过哪个文件启动 Web 服务？", "reference_answer": "run.py", "evidence": "项目根目录可以通过 run.py 启动 Web 服务。", "source_contains": "api_guide.md", "answerable": true}
+{"id": "q019", "question": "本机浏览器访问地址是什么？", "reference_answer": "http://127.0.0.1:8000", "evidence": "服务启动后，本机浏览器可以访问 http://127.0.0.1:8000。", "source_contains": "api_guide.md", "answerable": true}
+{"id": "q020", "question": "真实运行配置主要存放在哪个文件？", "reference_answer": "frontend/local_rag/.env", "evidence": "真实运行配置主要存放在 frontend/local_rag/.env 文件中。", "source_contains": "api_guide.md", "answerable": true}
+{"id": "q021", "question": "当前系统明确支持哪些文档格式？", "reference_answer": "TXT、Markdown、PDF、DOCX 和 CSV", "evidence": "当前系统明确支持 TXT、Markdown、PDF、DOCX 和 CSV 五种文档格式。", "source_contains": "user_manual.md", "answerable": true}
+{"id": "q022", "question": "现有文档是否声明支持 XLSX？", "reference_answer": "没有声明", "evidence": "现有文档没有声明支持 XLSX。", "source_contains": "user_manual.md", "answerable": true}
+{"id": "q023", "question": "Web 页面上传文档后系统会自动完成什么？", "reference_answer": "解析、文本切分、向量化和索引更新", "evidence": "用户从 Web 页面上传文档后，系统会自动完成解析、文本切分、向量化和索引更新。", "source_contains": "user_manual.md", "answerable": true}
+{"id": "q024", "question": "一个知识库可以包含多个文档吗？", "reference_answer": "可以", "evidence": "同一个知识库可以包含多个文档，检索会在所有已建立索引的文本块中进行。", "source_contains": "user_manual.md", "answerable": true}
+{"id": "q025", "question": "知识问答模式适合什么类型的场景？", "reference_answer": "公司制度、项目文档、产品说明和个人资料库等场景", "evidence": "知识问答模式适合公司制度、项目文档、产品说明和个人资料库等需要基于指定文档回答的场景。", "source_contains": "user_manual.md", "answerable": true}
+{"id": "q026", "question": "如何让连续多轮请求保留同一会话上下文？", "reference_answer": "使用相同的 session_id", "evidence": "连续多轮请求如果使用相同的 session_id，系统可以保留同一会话上下文。", "source_contains": "user_manual.md", "answerable": true}
+{"id": "q027", "question": "清空对话记忆之后知识库索引还在吗？", "reference_answer": "还在", "evidence": "清空对话记忆后，知识库索引仍然保留。", "source_contains": "user_manual.md", "answerable": true}
+{"id": "q028", "question": "执行“清空知识&记忆”会发生什么？", "reference_answer": "同时清理知识库状态和相关会话记忆", "evidence": "执行“清空知识&记忆”会同时清理知识库状态和相关会话记忆。", "source_contains": "user_manual.md", "answerable": true}
+{"id": "q029", "question": "当前版本是否实现语音输入和 OCR？", "reference_answer": "没有", "evidence": "当前版本未实现语音输入和 OCR 自动识别。", "source_contains": "user_manual.md", "answerable": true}
+{"id": "q030", "question": "Hugging Face unauthenticated warning 是否一定代表程序失败？", "reference_answer": "不一定", "evidence": "Hugging Face unauthenticated warning 只表示当前没有使用 HF_TOKEN；如果公开模型仍能正常下载和加载，该警告不等于程序运行失败。", "source_contains": "user_manual.md", "answerable": true}
+{"id": "q031", "question": "默认 HOST 配置是什么？", "reference_answer": "0.0.0.0", "evidence": "默认 HOST 配置为 0.0.0.0。", "source_contains": "deployment_guide.md", "answerable": true}
+{"id": "q032", "question": "默认 PORT 配置是多少？", "reference_answer": "8000", "evidence": "默认 PORT 配置为 8000。", "source_contains": "deployment_guide.md", "answerable": true}
+{"id": "q033", "question": "嵌入模型第一次使用时从哪里下载？", "reference_answer": "Hugging Face", "evidence": "嵌入模型第一次使用时会从 Hugging Face 下载，并在后续运行中优先使用本地缓存。", "source_contains": "deployment_guide.md", "answerable": true}
+{"id": "q034", "question": "当前聊天模型配置是什么？", "reference_answer": "qwen-plus", "evidence": "当前聊天模型配置为 CHAT_MODEL=qwen-plus。", "source_contains": "deployment_guide.md", "answerable": true}
+{"id": "q035", "question": "DashScope 的 OpenAI-compatible API 地址是什么？", "reference_answer": "https://dashscope.aliyuncs.com/compatible-mode/v1", "evidence": "DashScope 的 OpenAI-compatible API 地址为 https://dashscope.aliyuncs.com/compatible-mode/v1。", "source_contains": "deployment_guide.md", "answerable": true}
+{"id": "q036", "question": "真实 DashScope API Key 应该写到哪里？", "reference_answer": "frontend/local_rag/.env", "evidence": "真实 DASHSCOPE_API_KEY 应写入 frontend/local_rag/.env。", "source_contains": "deployment_guide.md", "answerable": true}
+{"id": "q037", "question": "RETRIEVAL_TOP_K 当前配置是多少？", "reference_answer": "4", "evidence": "当前 RETRIEVAL_TOP_K 配置值为 4。", "source_contains": "deployment_guide.md", "answerable": true}
+{"id": "q038", "question": "FAISS 索引目录由什么配置项指定？", "reference_answer": "FAISS_INDEX_DIR", "evidence": "FAISS 持久化索引目录由 FAISS_INDEX_DIR 配置项指定。", "source_contains": "deployment_guide.md", "answerable": true}
+{"id": "q039", "question": "真实 .env 文件应该上传 GitHub 吗？", "reference_answer": "不应该", "evidence": "真实 .env 文件不应提交到 GitHub；公开仓库只应保留 .env.example 占位模板。", "source_contains": "deployment_guide.md", "answerable": true}
+{"id": "q040", "question": "项目评测脚本可以统计哪些类型的指标？", "reference_answer": "Hit@K、MRR、回答正确性、Faithfulness、Relevance、Safe Refusal、检索延迟和端到端延迟", "evidence": "项目评测脚本 evaluation/evaluate_rag.py 可以统计 Hit@K、MRR、回答正确性、Faithfulness、Relevance、Safe Refusal、检索延迟和端到端延迟等指标。", "source_contains": "deployment_guide.md", "answerable": true}
+{"id": "q041", "question": "项目单个上传文件最大允许多少 MB？", "reference_answer": "当前知识库资料未提供该信息", "evidence": "", "source_contains": "", "answerable": false}
+{"id": "q042", "question": "项目正式部署在 AWS 还是阿里云 ECS？", "reference_answer": "当前知识库资料未提供该信息", "evidence": "", "source_contains": "", "answerable": false}
+{"id": "q043", "question": "系统最多支持多少个并发用户？", "reference_answer": "当前知识库资料未提供该信息", "evidence": "", "source_contains": "", "answerable": false}
+{"id": "q044", "question": "生产环境使用的 GPU 型号是什么？", "reference_answer": "当前知识库资料未提供该信息", "evidence": "", "source_contains": "", "answerable": false}
+{"id": "q045", "question": "服务器每个月的成本是多少？", "reference_answer": "当前知识库资料未提供该信息", "evidence": "", "source_contains": "", "answerable": false}
+{"id": "q046", "question": "项目正式上线日期是哪一天？", "reference_answer": "当前知识库资料未提供该信息", "evidence": "", "source_contains": "", "answerable": false}
+{"id": "q047", "question": "系统是否支持微信扫码登录？", "reference_answer": "当前知识库资料未提供该信息", "evidence": "", "source_contains": "", "answerable": false}
+{"id": "q048", "question": "项目是否已经接入企业 SSO？", "reference_answer": "当前知识库资料未提供该信息", "evidence": "", "source_contains": "", "answerable": false}
+{"id": "q049", "question": "系统的 SLA 可用性承诺是多少？", "reference_answer": "当前知识库资料未提供该信息", "evidence": "", "source_contains": "", "answerable": false}
+{"id": "q050", "question": "知识库管理员的默认账号密码是什么？", "reference_answer": "当前知识库资料未提供该信息", "evidence": "", "source_contains": "", "answerable": false}
+{"id": "q051", "question": "前端用的是哪个框架和什么语言？", "reference_answer": "Vue 3 与 TypeScript", "evidence": "前端技术栈为 Vue 3 与 TypeScript，版本为 vue 3.5.13。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q052", "question": "前端的构建工具是什么？", "reference_answer": "Vite", "evidence": "构建工具为 Vite，构建插件为 @vitejs/plugin-vue。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q053", "question": "前端构建产物输出到哪个目录？", "reference_answer": "frontend/web/dist", "evidence": "前端源码目录为 frontend/web，构建产物输出到 frontend/web/dist。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q054", "question": "前端要怎么构建？", "reference_answer": "npm install 与 npm run build", "evidence": "前端构建命令为 npm install 与 npm run build。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q055", "question": "回答区域支持什么格式的渲染？", "reference_answer": "Markdown", "evidence": "回答区域支持 Markdown 渲染。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q056", "question": "渲染 Markdown 之前做了什么安全防护？", "reference_answer": "用 DOMPurify 清洗，防止 XSS 注入", "evidence": "Markdown 渲染前会使用 DOMPurify 清洗，防止 XSS 注入，版本为 dompurify 3.2.4。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q057", "question": "页面上可以切换哪两种问答模式？", "reference_answer": "rag 与 chat", "evidence": "页面提供 rag 与 chat 两种模式切换。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q058", "question": "前端靠什么维持同一个会话的上下文？", "reference_answer": "请求中携带 session_id", "evidence": "前端通过在请求中携带 session_id 来维持同一会话上下文。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q059", "question": "项目用哪个文件做容器化，是不是多阶段构建？", "reference_answer": "Dockerfile，采用多阶段构建", "evidence": "项目提供 Dockerfile，采用多阶段构建。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q060", "question": "编排服务用的是哪个文件？", "reference_answer": "docker-compose.yml", "evidence": "项目提供 docker-compose.yml 用于编排服务。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q061", "question": "GitHub Actions 的工作流文件叫什么？", "reference_answer": ".github/workflows/ci.yml", "evidence": "GitHub Actions 工作流文件为 .github/workflows/ci.yml。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q062", "question": "CI 里一共有哪三个 job？", "reference_answer": "backend-smoke、frontend-build、docker-build", "evidence": "CI 包含三个 job：backend-smoke、frontend-build、docker-build。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q063", "question": "后端冒烟测试用的 Python 版本是多少？", "reference_answer": "Python 3.11", "evidence": "backend-smoke 使用 Python 3.11，执行 from frontend.local_rag.app import create_app 的导入冒烟测试。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q064", "question": "前端构建 job 用的 Node 版本是多少？", "reference_answer": "Node 20", "evidence": "frontend-build 使用 Node 20，执行 npm install 与 npm run build。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q065", "question": "docker-build 这个 job 依赖哪两个 job？", "reference_answer": "backend-smoke 与 frontend-build", "evidence": "docker-build 依赖 backend-smoke 与 frontend-build 两个 job 成功后才会执行。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q066", "question": "自动化工作流集成走的是哪个接口？", "reference_answer": "/api/webhook", "evidence": "系统提供 /api/webhook 接口，用于自动化工作流集成。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q067", "question": "webhook 密钥校验失败会返回什么？", "reference_answer": "401 Invalid webhook secret", "evidence": "webhook 请求需要携带 X-Webhook-Secret 请求头，校验失败返回 401 Invalid webhook secret。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q068", "question": "想开启链路追踪要接哪个平台？", "reference_answer": "LangSmith", "evidence": "可选的链路追踪通过 LangSmith 开启，需要配置 LANGCHAIN_TRACING_V2、LANGCHAIN_API_KEY 与 LANGCHAIN_PROJECT。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q069", "question": "检索评测脚本是哪个文件？", "reference_answer": "evaluation/evaluate_rag.py", "evidence": "检索评测脚本为 evaluation/evaluate_rag.py。", "answerable": true, "source_contains": "eval_and_observability"}
+{"id": "q070", "question": "评测数据集存在哪个文件里？", "reference_answer": "evaluation/eval_dataset.jsonl", "evidence": "评测数据集为 evaluation/eval_dataset.jsonl，默认包含 50 条题目。", "answerable": true, "source_contains": "eval_and_observability"}
+{"id": "q071", "question": "评测集里有多少条是用来测拒答的？", "reference_answer": "10 条不可答题", "evidence": "数据集中包含 10 条知识库未覆盖的不可答题，用于检验 Safe Refusal 拒答能力。", "answerable": true, "source_contains": "eval_and_observability"}
+{"id": "q072", "question": "检索侧的评测指标有哪些？", "reference_answer": "Hit@K 与 MRR", "evidence": "检索侧指标为 Hit@K 与 MRR。", "answerable": true, "source_contains": "eval_and_observability"}
+{"id": "q073", "question": "Ragas 用来评测生成质量的哪两个维度？", "reference_answer": "Faithfulness 与 Answer Relevancy", "evidence": "生成质量可选用 Ragas 评测 Faithfulness 与 Answer Relevancy。", "answerable": true, "source_contains": "eval_and_observability"}
+{"id": "q074", "question": "多 Agent 链路里三个 Agent 分别叫什么？", "reference_answer": "document_parse_agent、retrieval_agent、generation_agent", "evidence": "多 Agent 链路为 document_parse_agent、retrieval_agent、generation_agent。", "answerable": true, "source_contains": "eval_and_observability"}
+{"id": "q075", "question": "哪个返回字段能看出这次回答调用了哪些 Agent？", "reference_answer": "agent_trace", "evidence": "问答接口返回的 agent_trace 字段记录了本次回答实际调用了哪些 Agent。", "answerable": true, "source_contains": "eval_and_observability"}
+{"id": "q076", "question": "知识库里查不到依据时系统会怎么做？", "reference_answer": "提示联系人工客服，不编造答案", "evidence": "知识库中没有证据时，系统会提示联系人工客服，而不是凭空编造答案。", "answerable": true, "source_contains": "eval_and_observability"}
+{"id": "q077", "question": "评测会统计哪两类延迟？", "reference_answer": "检索延迟与端到端延迟", "evidence": "端到端评测还会统计检索延迟与端到端延迟。", "answerable": true, "source_contains": "eval_and_observability"}
+{"id": "q078", "question": "一个会话最多能记住多少轮对话？", "reference_answer": "10 轮", "evidence": "会话历史默认最多保留 10 轮，由 MAX_HISTORY_TURNS 控制。", "answerable": true, "source_contains": "session_and_storage"}
+{"id": "q079", "question": "上传同名文件会被覆盖吗？系统怎么处理？", "reference_answer": "不会，用 UUID 十六进制前缀重命名", "evidence": "上传的文件会以 UUID 十六进制前缀重命名后落盘，避免同名文件互相覆盖。", "answerable": true, "source_contains": "session_and_storage"}
+{"id": "q080", "question": "上传的文件落在哪个目录？", "reference_answer": "data/uploads", "evidence": "上传文件存放在 data/uploads 目录下。", "answerable": true, "source_contains": "session_and_storage"}
+{"id": "q081", "question": "FAISS 索引持久化到哪个目录？", "reference_answer": "data/faiss_index", "evidence": "FAISS 索引持久化到 data/faiss_index 目录。", "answerable": true, "source_contains": "session_and_storage"}
+{"id": "q082", "question": "新传一份文档，需要把整个索引重建一遍吗？", "reference_answer": "不需要，支持增量入库", "evidence": "知识库支持增量入库，新上传的文档会追加到已有索引而不需要全量重建。", "answerable": true, "source_contains": "session_and_storage"}
+{"id": "q083", "question": "清空对话记忆会不会把索引文件也删了？", "reference_answer": "不会，不影响索引文件", "evidence": "清空对话记忆只删除会话历史，不影响 data/faiss_index 下的索引文件。", "answerable": true, "source_contains": "session_and_storage"}
+{"id": "q084", "question": "执行清空知识操作会清掉哪些东西？", "reference_answer": "知识库状态和相关会话记忆", "evidence": "执行清空知识操作会同时清理知识库状态和相关会话记忆。", "answerable": true, "source_contains": "session_and_storage"}
+{"id": "q085", "question": "DOMPurify 用的是哪个版本？", "reference_answer": "dompurify 3.2.4", "evidence": "Markdown 渲染前会使用 DOMPurify 清洗，防止 XSS 注入，版本为 dompurify 3.2.4。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q086", "question": "webhook 的密钥要放在哪个请求头里？", "reference_answer": "X-Webhook-Secret", "evidence": "webhook 请求需要携带 X-Webhook-Secret 请求头，校验失败返回 401 Invalid webhook secret。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q087", "question": "接 LangSmith 要配哪几个环境变量？", "reference_answer": "LANGCHAIN_TRACING_V2、LANGCHAIN_API_KEY、LANGCHAIN_PROJECT", "evidence": "可选的链路追踪通过 LangSmith 开启，需要配置 LANGCHAIN_TRACING_V2、LANGCHAIN_API_KEY 与 LANGCHAIN_PROJECT。", "answerable": true, "source_contains": "devops_ci"}
+{"id": "q088", "question": "评测数据集默认包含多少条题目？", "reference_answer": "50 条", "evidence": "评测数据集为 evaluation/eval_dataset.jsonl，默认包含 50 条题目。", "answerable": true, "source_contains": "eval_and_observability"}
+{"id": "q089", "question": "前端源码放在哪个目录？", "reference_answer": "frontend/web", "evidence": "前端源码目录为 frontend/web，构建产物输出到 frontend/web/dist。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q090", "question": "Vite 用的 Vue 插件叫什么？", "reference_answer": "@vitejs/plugin-vue", "evidence": "构建工具为 Vite，构建插件为 @vitejs/plugin-vue。", "answerable": true, "source_contains": "frontend_guide"}
+{"id": "q091", "question": "有没有微信小程序端的界面？", "reference_answer": "", "evidence": "", "answerable": false, "source_contains": ""}
+{"id": "q092", "question": "业务数据存的是 PostgreSQL 还是 MySQL？", "reference_answer": "", "evidence": "", "answerable": false, "source_contains": ""}
+{"id": "q093", "question": "系统支持多租户隔离吗？", "reference_answer": "", "evidence": "", "answerable": false, "source_contains": ""}
+{"id": "q094", "question": "回答能不能用语音播报出来？", "reference_answer": "", "evidence": "", "answerable": false, "source_contains": ""}
+{"id": "q095", "question": "有没有接入 Prometheus 做指标监控？", "reference_answer": "", "evidence": "", "answerable": false, "source_contains": ""}
+{"id": "q096", "question": "单个知识库最多允许放多少份文档？", "reference_answer": "", "evidence": "", "answerable": false, "source_contains": ""}
+{"id": "q097", "question": "支持按用户角色做权限控制吗？", "reference_answer": "", "evidence": "", "answerable": false, "source_contains": ""}
+{"id": "q098", "question": "有没有提供 Kubernetes 的 Helm Chart？", "reference_answer": "", "evidence": "", "answerable": false, "source_contains": ""}
+{"id": "q099", "question": "知识库内容能导出成 PDF 吗？", "reference_answer": "", "evidence": "", "answerable": false, "source_contains": ""}
+{"id": "q100", "question": "回答支持流式逐字输出吗？", "reference_answer": "", "evidence": "", "answerable": false, "source_contains": ""}
