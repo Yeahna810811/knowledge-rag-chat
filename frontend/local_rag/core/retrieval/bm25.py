@@ -93,6 +93,21 @@ class BM25Index:
             for term, df in self._df.items()
         }
 
+    # ---------------- 只读访问器（供查询改写等上层复用） ----------------
+    def idf(self, term: str) -> float:
+        """单个词的 IDF。没在语料里出现过的词返回 0，表示「无区分度」。"""
+        return self._idf.get(term, 0.0)
+
+    def term_frequencies(self, doc_index: int) -> dict[str, int]:
+        """某个文档的词频表。
+
+        暴露这个是为了让查询改写能复用索引里已有的分词结果，
+        而不是把原文再分一遍（分词是构建期的成本，检索期不该重复付）。
+        """
+        if 0 <= doc_index < len(self._tf):
+            return self._tf[doc_index]
+        return {}
+
     def scores(self, query: str) -> list[float]:
         """返回 query 对全部文档的 BM25 得分（未排序，按下标对齐）。"""
         if not self.is_ready:

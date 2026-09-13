@@ -77,6 +77,21 @@ class LexicalStore:
     def n_docs(self) -> int:
         return len(self._texts)
 
+    def metadata_of(self, doc_index: int) -> dict:
+        """按下标取 metadata。供查询改写按来源限流使用。"""
+        if 0 <= doc_index < len(self._metadatas):
+            return dict(self._metadatas[doc_index])
+        return {}
+
+    @property
+    def index(self) -> BM25Index:
+        """底层 BM25 索引的只读引用。
+
+        查询改写需要读 IDF 与词频，但不应自己再分一遍词——
+        分词是构建期已经付过的成本。
+        """
+        return self._index
+
     # ---------------- 写入 ----------------
     def add_documents(self, documents: Sequence[Any]) -> int:
         """追加文档并重建索引。返回新增条数。
@@ -122,6 +137,48 @@ class LexicalStore:
             {"content": text, "metadata": dict(meta)}
             for text, meta in zip(self._texts, self._metadatas)
         ]
+
+    def search_weighted(
+        self,
+        query: str,
+        extra_terms: Sequence[str] = (),
+        extra_weight: float = 0.3,
+        k: int = 4,
+    ) -> list[dict]:
+        """带扩展词的检索：原查询得分 + extra_weight × 各扩展词得分。
+
+        为什么不把扩展词直接拼进查询串：
+        拼接后会被 BM25 的词频饱和稀释（5 个扩展词各出现 1 次，
+        和原查询的一个核心词权重相当），而且无法控制扩展部分的占比。
+        分开打分再加权，权重就是配置项——能调，也能一键关掉。
+        """
+        if not self._index.is_ready or not query.strip():
+            return []
+
+        base = self._index.scores(query)
+        if not base:
+            return []
+
+        combined = list(base)
+        for term in extra_terms:
+            if not term:
+                continue
+            term_scores = self._index.scores(term)
+            if len(term_scores) != len(combined):
+                continue
+            for i, value in enumerate(term_scores):
+                combined[i] += extra_weight * value
+
+        hits = [(i, s) for i, s in enumerate(combined) if s > 0.0]
+        hits.sort(key=lambda item: (-item[1], item[0]))
+
+        out: list[dict] = []
+        for index, score in hits[:k]:
+            meta = dict(self._metadatas[index])
+            meta["retrieval_score"] = round(float(score), 6)
+            meta["retrieved_by"] = "bm25" if not extra_terms else "bm25+rewrite"
+            out.append({"content": self._texts[index], "metadata": meta})
+        return out
 
     # ---------------- 持久化 ----------------
     def save(self) -> None:

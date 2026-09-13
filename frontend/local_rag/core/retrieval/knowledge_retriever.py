@@ -13,10 +13,15 @@ add_documents / clear / save / load），所以 retrieval_agent 一行都不用�
 - hybrid ：RRF 融合两路，实验用；实测在本项目语料上不优于 BM25 单路。
 
 为什么默认 bm25 而不是 hybrid：
-54 chunk 语料、真实 bge-small-zh 向量上的配对 bootstrap 检验显示，
-混合检索相对 BM25 单路的 MRR 提升**不显著**（Δ=+0.0196，95% CI 跨 0），
-而在原始问法下还显著更差（Δ=-0.119，CI [-0.225, -0.025]）。
+45 chunk 语料、真实 bge-small-zh 向量上的配对 bootstrap 检验显示，
+混合检索相对 BM25 单路**没有任何权重的显著收益**：原始问法下显著更差
+（ΔMRR -0.069 ~ -0.097，p ≤ 0.031），口语化问法下也只是打平（p 0.30~0.97）。
 所以默认走 BM25，融合层保留为可选项，等换了更强的 embedding 模型再重新评估。
+
+查询改写（settings.retrieval_query_rewrite）：
+BM25 的已知短板是「词汇不匹配」——口语化提问下 MRR 从 0.893 掉到 0.510。
+在检索前先把查询改写成更贴近文档用词的形式（见 query_rewrite.py），
+是这个问题在检索层的正解；调检索器权重治不了。
 """
 
 from __future__ import annotations
@@ -32,6 +37,11 @@ from frontend.local_rag.core.retrieval.hybrid_retriever import (
     HybridRetriever,
 )
 from frontend.local_rag.core.retrieval.lexical_store import LexicalStore
+from frontend.local_rag.core.retrieval.query_rewrite import (
+    BaseQueryRewriter,
+    NoopRewriter,
+    RewriteResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +78,23 @@ class KnowledgeRetriever:
     # BM25 零命中时是否回落到稠密路。关掉就是严格纯稀疏，
     # 代价是遇到词汇完全不重叠的提问会直接返回空。
     dense_fallback: bool = True
+    # 查询改写器。默认 NoopRewriter（不改写），由 service 按配置注入。
+    # 只在 BM25 / 级联路径生效：hybrid 模式内部自建索引与两路融合，
+    # 改写在那一层的收益需要单独评估，不在这里默默生效。
+    query_rewriter: BaseQueryRewriter = field(default_factory=NoopRewriter)
+    rewrite_weight: float = 0.3
 
     _hybrid: HybridRetriever | None = field(default=None, init=False)
     _hybrid_dirty: bool = field(default=True, init=False)
     _degraded: bool = field(default=False, init=False)
+    _last_rewrite: RewriteResult | None = field(default=None, init=False)
 
     # ---------------- 状态 ----------------
+    @property
+    def last_rewrite(self) -> RewriteResult | None:
+        """最近一次查询改写的详情，供日志 / 排查使用。"""
+        return self._last_rewrite
+
     @property
     def is_ready(self) -> bool:
         """按当前模式判断知识库是否可用。"""
@@ -202,11 +223,34 @@ class KnowledgeRetriever:
 
     def _safe_lexical(self, query: str, k: int) -> list[dict]:
         try:
+            result = self._rewrite(query)
+            self._last_rewrite = result
+            if result.is_effective:
+                # 改写只用于第一轮召回；改写失败/无扩展词时退回原始查询，
+                # 保证「改写层挂了，检索仍然按原样工作」。
+                return self.lexical_store.search_weighted(
+                    query,
+                    extra_terms=result.expanded_terms,
+                    extra_weight=self.rewrite_weight,
+                    k=k,
+                )
             return self.lexical_store.search(query, k=k)
         except Exception as exc:
             self._degraded = True
             logger.warning("lexical search failed: %s", exc)
             return []
+
+    def _rewrite(self, query: str) -> RewriteResult:
+        """跑一次查询改写。任何异常都退化为「不改写」。"""
+        try:
+            return self.query_rewriter.rewrite(
+                query,
+                index=self.lexical_store.index,
+                metadata_of=self.lexical_store.metadata_of,
+            )
+        except Exception as exc:
+            logger.warning("query rewrite failed, using original query: %s", exc)
+            return RewriteResult(query, strategy="error")
 
     def _search_dense(self, query: str, k: int) -> list[dict]:
         if self.dense_store is None or not self.dense_store.is_ready:

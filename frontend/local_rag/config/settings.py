@@ -45,6 +45,18 @@ class Settings(BaseSettings):
     hybrid_bm25_weight: float = 1.0
     hybrid_dense_weight: float = 1.0
 
+    # ---- 查询改写（解决口语化提问与文档用词之间的「词汇不匹配」） ----
+    # off = 不改写（对照 / 排障）
+    # prf = 伪相关反馈（默认，离线无依赖，扩展词取自语料自身用词）
+    # llm = 用大模型改写口语化问题（更准，但多一次 LLM 调用）
+    retrieval_query_rewrite: str = "prf"
+    # 扩展词相对原查询的权重。原查询恒为 1.0，扩展部分默认只占 0.3——
+    # 等权 RRF 的教训：低质量信号拿到过高权重会把正确结果挤下去。
+    query_rewrite_weight: float = 0.3
+    # 伪相关反馈的扩展词数量与反馈文档数
+    query_rewrite_terms: int = 6
+    query_rewrite_feedback_docs: int = 3
+
     # ---- LangSmith 可观测性（可选） ----
     langchain_tracing_v2: bool = False
     langchain_api_key: str = ""

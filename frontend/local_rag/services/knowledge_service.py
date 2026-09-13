@@ -10,6 +10,10 @@ from frontend.local_rag.core.retrieval import (
     RetrievalMode,
 )
 from frontend.local_rag.core.retrieval.hybrid_retriever import HybridConfig
+from frontend.local_rag.core.retrieval.query_rewrite import (
+    PRFConfig,
+    build_rewriter,
+)
 from frontend.local_rag.core.vector_store import VectorStoreManager
 from frontend.local_rag.utils.file_utils import ensure_dir
 
@@ -66,6 +70,25 @@ class KnowledgeService:
                 dense_weight=self.settings.hybrid_dense_weight,
             ),
             dense_fallback=self.settings.retrieval_dense_fallback,
+            query_rewriter=self._build_rewriter(),
+            rewrite_weight=self.settings.query_rewrite_weight,
+        )
+
+    def _build_rewriter(self):
+        """按配置构造查询改写器。
+
+        llm 模式这里不注入客户端：LLM 客户端由 generation 层持有，
+        检索层不该反向依赖生成层。需要 llm 改写时，在 app 启动处
+        用 `build_rewriter("llm", complete=...)` 显式装配，
+        避免「检索层偷偷多调一次大模型」这种看不见的成本。
+        """
+        return build_rewriter(
+            self.settings.retrieval_query_rewrite,
+            config=PRFConfig(
+                feedback_docs=self.settings.query_rewrite_feedback_docs,
+                expansion_terms=self.settings.query_rewrite_terms,
+                expansion_weight=self.settings.query_rewrite_weight,
+            ),
         )
 
     def _ensure_runtime(self) -> AgentOrchestrator:
