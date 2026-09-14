@@ -1,59 +1,228 @@
-# 基于 LangChain 的智能知识库 RAG 问答平台（多 Agent）
+# 智能知识库 RAG 问答与评测系统
 
-面向本地/私有文档的检索增强生成（RAG）应用。技术栈：**FastAPI + Vue 3/TypeScript + LangChain 多 Agent + Sentence-Transformers + FAISS + Qwen/DashScope + LangSmith + Ragas**。
+基于 **FastAPI + Vue 3 + LangChain + BM25 + BGE/FAISS + Qwen** 构建的本地知识库 RAG 应用。
 
-支持文档入库、Top-K 语义检索、多轮会话记忆、**RAG 知识库 / 普通 AI 对话双模式**、答案溯源，以及 Docker / CI 私有化部署工作流。
+项目不仅实现文档入库、检索增强生成、答案溯源和多会话管理，还构建了完整的离线评测体系，对 **Dense、BM25、RRF Hybrid、MMR** 等检索策略进行 A/B 对比，并通过 **Paired Bootstrap + LLM-as-a-Judge** 完成检索选型与端到端质量验证。
 
-## 功能
-
-- 支持 `.txt`、`.md`、`.pdf`、`.docx`、`.csv` 文档上传与解析
-- 多 Agent 协同：`document_parse_agent` → `retrieval_agent` → `generation_agent`
-- `RecursiveCharacterTextSplitter` 可配置 Chunk 切分与重叠
-- 本地 `BAAI/bge-small-zh-v1.5` Embedding + FAISS 持久化 / 增量入库 / Top-K 检索
-- 双模式问答：`rag`（客服 Grounded Prompt + 溯源）与 `chat`（普通 AI 对话）可切换
-- 知识库无证据时提示联系人工客服；返回 `sources` 与 `agent_trace`
-- 基于 `session_id` 的多会话历史（默认最多 10 轮）与聊天记录查询
-- Vue 3 + TypeScript Web：实时对话、Markdown 渲染、模式切换、上传与清空
-- LangSmith 可选追踪 Agent 链路；Ragas 可选评测 Faithfulness / Answer Relevancy
-- Docker 容器化；GitHub Actions CI；`/api/webhook` 支持自动化工作流集成
-
-## 系统流程
+当前正式默认检索方案为：
 
 ```text
-上传文档
-  → DocumentParseAgent（解析 / Chunk / Embedding / FAISS）
-
-用户问题 + mode + session_id
-  →（rag）RetrievalAgent Top-K
-  → GenerationAgent（客服 Prompt 或普通对话 Prompt）
-  → 回答 + Sources + agent_trace
+BM25
 ```
 
-## 快速开始
+Dense 与 Hybrid 继续作为可配置和实验方案保留。
 
-### 1. 后端依赖
+---
+
+## 1. 核心功能
+
+- 支持 `.txt`、`.md`、`.pdf`、`.docx`、`.csv` 文档上传与解析
+- `RecursiveCharacterTextSplitter` 文本切分
+- BM25 稀疏检索与 JSON 持久化
+- BGE Embedding + FAISS Dense Retrieval
+- Dense / BM25 / RRF Hybrid 多检索模式
+- MMR 去冗余能力
+- PRF 查询改写能力
+- `RetrievalAgent` + `GenerationAgent` 多 Agent 链路
+- RAG / Chat 双模式
+- Qwen / DashScope 大模型生成
+- Answer Sources 来源溯源
+- `session_id` 多会话上下文管理
+- LangSmith 可选链路追踪
+- FastAPI REST API
+- Vue 3 + TypeScript Web 界面
+- Docker 容器化
+- GitHub Actions CI
+- Webhook 自动化接口
+- 完整 Retrieval / RAG 离线 Benchmark
+
+---
+
+## 2. 系统架构
+
+```text
+                     ┌─────────────────────┐
+                     │       用户问题       │
+                     └──────────┬──────────┘
+                                │
+                         RetrievalAgent
+                                │
+                     ┌──────────▼──────────┐
+                     │ KnowledgeRetriever  │
+                     └──────┬───────┬──────┘
+                            │       │
+                         BM25      Dense
+                       默认主路   BGE + FAISS
+                            │       │
+                            └── RRF ┘
+                               可选
+                                │
+                              Top-K
+                                │
+                        GenerationAgent
+                                │
+                              Qwen
+                                │
+                     Answer + Sources
+```
+
+文档入库链路：
+
+```text
+Upload
+  ↓
+Document Loader
+  ↓
+DocumentParseAgent
+  ↓
+Recursive Chunking
+  ↓
+KnowledgeRetriever
+  ├── BM25 Index
+  └── FAISS Index（按模式加载）
+```
+
+---
+
+## 3. Retrieval 设计
+
+当前应用默认配置：
+
+```env
+RETRIEVAL_MODE=bm25
+RETRIEVAL_DENSE_FALLBACK=true
+RETRIEVAL_LAZY_DENSE=true
+RETRIEVAL_QUERY_REWRITE=prf
+```
+
+### BM25
+
+当前正式默认方案。
+
+适合技术知识库中的：
+
+- API 名称
+- 配置字段
+- 文件名
+- 类名
+- 模型名
+- 端口
+- 固定技术术语
+
+BM25 索引支持：
+
+```text
+add_documents
+search
+save
+load
+clear
+```
+
+并使用 JSON 进行本地持久化。
+
+### Dense
+
+使用：
+
+```text
+BAAI/bge-small-zh-v1.5
++
+FAISS
+```
+
+用于语义向量检索。
+
+### Hybrid
+
+将：
+
+```text
+BM25 Ranking
++
+Dense Ranking
+↓
+RRF
+```
+
+进行排名融合。
+
+Hybrid 已完整实现，但当前 Benchmark 中没有超过 BM25，因此没有设为默认方案。
+
+### Query Rewrite
+
+检索层支持：
+
+```text
+off
+prf
+llm
+```
+
+三种查询改写策略。
+
+当前配置默认：
+
+```text
+prf
+```
+
+正式 Retrieval Benchmark 的指标主要用于比较原始 Dense / BM25 / Hybrid 检索策略，不将查询改写收益与检索器选型结果混为一谈。
+
+---
+
+## 4. 快速开始
+
+### 4.1 创建环境
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+```
+
+安装后端依赖：
+
+```bash
 pip install -r frontend/local_rag/requirements.txt
 ```
 
-### 2. 配置
+---
+
+### 4.2 配置环境变量
+
+复制：
 
 ```bash
 cp frontend/local_rag/.env.example frontend/local_rag/.env
 ```
 
-至少填写 `DASHSCOPE_API_KEY`。可选开启 LangSmith：
+至少配置：
 
 ```env
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=your_langsmith_key
-LANGCHAIN_PROJECT=knowledge-rag-chat
+DASHSCOPE_API_KEY=your_dashscope_api_key
 ```
 
-### 3. 前端构建
+核心配置示例：
+
+```env
+EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
+CHAT_MODEL=qwen-plus
+
+CHUNK_SIZE=500
+CHUNK_OVERLAP=50
+RETRIEVAL_TOP_K=4
+
+RETRIEVAL_MODE=bm25
+RETRIEVAL_DENSE_FALLBACK=true
+RETRIEVAL_LAZY_DENSE=true
+
+RETRIEVAL_QUERY_REWRITE=prf
+QUERY_REWRITE_WEIGHT=0.3
+```
+
+---
+
+### 4.3 构建前端
 
 ```bash
 cd frontend/web
@@ -62,95 +231,428 @@ npm run build
 cd ../..
 ```
 
-开发时可另开终端：`npm run dev`（Vite 代理 `/api` → `8000`）。
+开发模式：
 
-### 4. 启动
+```bash
+cd frontend/web
+npm run dev
+```
+
+---
+
+### 4.4 启动项目
+
+项目根目录：
 
 ```bash
 python run.py
 ```
 
-- Web：http://127.0.0.1:8000
-- Swagger：http://127.0.0.1:8000/docs
+访问：
 
-## API
+```text
+Web:
+http://127.0.0.1:8000
 
-| Method | Endpoint | 说明 |
+Swagger:
+http://127.0.0.1:8000/docs
+```
+
+---
+
+## 5. API
+
+| Method | Endpoint | 功能 |
 | --- | --- | --- |
-| POST | `/api/upload` | 上传并入库文档 |
-| POST | `/api/ask` | 双模式问答（`mode`: `rag` \| `chat`） |
-| GET | `/api/status` | 知识库 / Agent / LangSmith 状态 |
-| GET | `/api/history` | 查询会话历史 |
-| DELETE | `/api/reset` | 清空 FAISS 知识库 |
-| POST | `/api/clear_history` | 清空指定会话历史 |
-| POST | `/api/webhook` | CI/CD Webhook（可选 `X-Webhook-Secret`） |
+| POST | `/api/upload` | 上传文档并写入知识库 |
+| POST | `/api/ask` | RAG / Chat 问答 |
+| GET | `/api/status` | 查询知识库与检索状态 |
+| GET | `/api/history` | 查询指定会话历史 |
+| DELETE | `/api/reset` | 清空知识库 |
+| POST | `/api/clear_history` | 清空指定会话 |
+| POST | `/api/webhook` | 自动化 / CI Webhook |
 
 问答示例：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/ask \
   -H "Content-Type: application/json" \
-  -d '{"question":"这份文档主要讲了什么？","session_id":"demo","mode":"rag"}'
+  -d '{
+    "question":"这份文档主要讲了什么？",
+    "session_id":"demo",
+    "mode":"rag"
+  }'
 ```
 
-Webhook 示例：
+---
+
+## 6. Benchmark
+
+### 6.1 正式评测配置
+
+正式数据集：
+
+```text
+evaluation/eval_dataset_v3.jsonl
+```
+
+规模：
+
+```text
+100 questions
+├── 80 answerable
+└── 20 unanswerable
+```
+
+正式 Retrieval Benchmark：
+
+```text
+44 corpus files
+46 chunks
+
+chunk_size = 500
+chunk_overlap = 50
+```
+
+其中包含真实项目文档生成的 Hard Negative。
+
+---
+
+## 7. Retrieval A/B 实验
+
+正式运行命令：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/webhook \
-  -H "Content-Type: application/json" \
-  -H "X-Webhook-Secret: your_secret" \
-  -d '{"event":"health.check","payload":{}}'
+python evaluation/evaluate_retrieval_ab.py \
+  --dataset evaluation/eval_dataset_v3.jsonl \
+  --dense localbge \
+  --include-noise \
+  --metric bigram \
+  --ks 1 3 5 \
+  --chunk-size 500 \
+  --chunk-overlap 50 \
+  --output-dir evaluation/results/retrieval_final
 ```
 
-## Docker
+结果：
+
+| Strategy | Hit@1 | Hit@3 | Hit@5 | MRR |
+| --- | ---: | ---: | ---: | ---: |
+| Dense / BGE | 62.5% | 77.5% | 83.8% | 0.7060 |
+| **BM25** | **82.5%** | **95.0%** | **97.5%** | **0.8869** |
+| RRF Hybrid 1:1 | 70.0% | 88.7% | 92.5% | 0.7927 |
+| Hybrid + MMR | 70.0% | 87.5% | 93.8% | 0.7860 |
+
+BM25 相比 Dense：
+
+```text
+Hit@1:
+62.5% → 82.5%
+
+提升 20 个百分点
+```
+
+因此当前知识库场景最终选择：
+
+```text
+BM25
+```
+
+作为默认 Retrieval。
+
+---
+
+## 8. 统计显著性检验
+
+运行：
+
+```bash
+python evaluation/significance_test.py \
+  --dataset evaluation/eval_dataset_v3.jsonl \
+  --rounds 10000
+```
+
+Dense 相对 BM25：
+
+```text
+ΔMRR = -0.1808
+95% CI = [-0.2848, -0.0781]
+
+Bootstrap p < 0.001
+Sign Test p = 0.003
+```
+
+说明在当前 Benchmark 中，BM25 相比 BGE Dense 的优势具有统计支持。
+
+对于不同权重的 RRF Hybrid，当前实验均未超过 BM25。
+
+因此没有为了增加技术复杂度而强行采用 Hybrid。
+
+---
+
+## 9. End-to-End RAG Benchmark
+
+最终使用：
+
+```text
+BM25
+↓
+RetrievalAgent
+↓
+GenerationAgent
+↓
+Qwen
+↓
+LLM-as-a-Judge
+```
+
+运行：
+
+```bash
+python evaluation/evaluate_rag.py \
+  --retriever bm25 \
+  --judge \
+  --output-dir evaluation/results/rag_final
+```
+
+### Retrieval
+
+| Metric | Result |
+| --- | ---: |
+| Hit@1 | 81.25% |
+| Hit@3 | 95.0% |
+| Hit@5 | 97.5% |
+| MRR | 0.8806 |
+
+### LLM-as-a-Judge
+
+| Metric | Result |
+| --- | ---: |
+| Correctness | **97.0%** |
+| Faithfulness | **99.3%** |
+| Relevance | **96.9%** |
+| Safe Refusal | **100%** |
+
+Safe Refusal 仅统计：
+
+```text
+20 道知识库外不可答题
+```
+
+全部 100 道问题均完成 Judge。
+
+> LLM-as-a-Judge 属于自动评测，不等同于人工专家标注。
+
+---
+
+## 10. Latency
+
+最终 BM25-RAG：
+
+### Retrieval
+
+```text
+Average = 0.82 ms
+P50     = 0.66 ms
+P95     = 1.13 ms
+```
+
+### End-to-End
+
+```text
+Average = 3.49 s
+P50     = 3.29 s
+P95     = 5.33 s
+```
+
+当前系统主要耗时来自 LLM Generation，而不是 BM25 Retrieval。
+
+---
+
+## 11. 为什么有两组 Retrieval 数字
+
+Retrieval A/B：
+
+```text
+BM25 Hit@1 = 82.5%
+MRR        = 0.8869
+```
+
+End-to-End RAG：
+
+```text
+Hit@1 = 81.25%
+MRR   = 0.8806
+```
+
+两者用途不同：
+
+```text
+evaluate_retrieval_ab.py
+→ Retrieval 策略 A/B 与选型
+
+evaluate_rag.py
+→ 完整 RAG End-to-End 评测
+```
+
+因此项目不会把两组指标混为同一实验。
+
+---
+
+## 12. 测试
+
+Retrieval 算法测试：
+
+```bash
+python tests/test_retrieval.py
+```
+
+KnowledgeRetriever 测试：
+
+```bash
+python tests/test_knowledge_retriever.py
+```
+
+当前已覆盖：
+
+```text
+BM25
+Dense
+Hybrid
+RRF
+MMR
+Persistence
+Fallback
+Restart Recovery
+Retrieval Routing
+异常路径
+```
+
+此前测试结果：
+
+```text
+26 passed
+38 passed
+```
+
+---
+
+## 13. Docker
 
 ```bash
 docker compose up --build
 ```
 
-## Benchmark
+---
 
-自建 50 条 QA（40 可答 / 10 拒答）：
-
-```bash
-python evaluation/evaluate_rag.py --judge \
-  --corpus evaluation/corpus/*.md
-```
-
-Ragas（可选）：
-
-```bash
-pip install -r evaluation/requirements-eval.txt
-python evaluation/evaluate_with_ragas.py --limit 10
-```
-
-检索策略的权威结论见 `evaluation/EVALUATION_AUDIT.md`：100 题 benchmark（80 可答）、45 chunk 语料（含 35 个取自本项目真实文档的难负样本 chunk），BM25 单路 Hit@1 0.838 / MRR 0.893，显著优于稠密路与等权混合（配对 bootstrap，p < 0.05），口语化问法下混合检索亦无显著收益；运行时 45 chunk 入库 3.3ms vs 4920ms、单条查询 0.05ms vs 21.3ms。
-早期 5 chunk 语料 + Ragas 口径的旧结果仍留在 `evaluation/results/`，仅作历史对照，**不作为结论引用**（语料过小，随机基线 Hit@3 就有 60%）。
-
-## 项目结构
+## 14. 项目结构
 
 ```text
 knowledge-rag-chat/
+├── README.md
 ├── run.py
 ├── Dockerfile
 ├── docker-compose.yml
-├── .github/workflows/ci.yml
-├── evaluation/
-│   ├── EVALUATION_AUDIT.md        # 检索策略选型的审计报告（权威结论）
-│   ├── evaluate_retrieval_ab.py   # 检索策略 A/B 实验台
-│   ├── significance_test.py       # 配对 bootstrap / 符号检验 / McNemar
-│   ├── build_extended_corpus.py   # 用真实文档生成难负样本语料
-│   ├── validate_noise_corpus.py   # 噪声语料污染校验
-│   ├── benchmark_runtime.py       # 入库 / 查询 / 冷启动性能对比
-│   ├── evaluate_rag.py
-│   ├── evaluate_with_ragas.py
-│   └── results/
-└── frontend/
-    ├── web/                 # Vue 3 + TypeScript
-    └── local_rag/
-        ├── app.py
-        ├── api/routes.py
-        ├── core/agents/     # 多 Agent 调度
-        ├── core/retrieval/  # 检索门面：dense / bm25 / hybrid 三模式 + 持久化稀疏索引
-        └── services/
+├── .github/
+│   └── workflows/
+│
+├── frontend/
+│   ├── web/
+│   │   └── src/
+│   │
+│   └── local_rag/
+│       ├── api/
+│       ├── config/
+│       ├── core/
+│       │   ├── agents/
+│       │   └── retrieval/
+│       ├── services/
+│       └── utils/
+│
+├── tests/
+│   ├── test_retrieval.py
+│   └── test_knowledge_retriever.py
+│
+└── evaluation/
+    ├── EVALUATION_AUDIT.md
+    ├── README.md
+    ├── eval_dataset_v3.jsonl
+    ├── eval_dataset_oral_v3.jsonl
+    ├── corpus/
+    ├── extended_noise/
+    ├── evaluate_retrieval_ab.py
+    ├── significance_test.py
+    ├── benchmark_runtime.py
+    ├── evaluate_rag.py
+    └── results/
+        ├── retrieval_final/
+        ├── rag_final/
+        └── archive/
 ```
+
+---
+
+## 15. 正式结果
+
+Retrieval：
+
+```text
+evaluation/results/retrieval_final/
+├── ab_retrieval.json
+├── ab_retrieval_details.csv
+└── significance_test.txt
+```
+
+End-to-End RAG：
+
+```text
+evaluation/results/rag_final/
+├── evaluation_details.csv
+└── evaluation_summary.json
+```
+
+历史 Prompt 对照实验：
+
+```text
+evaluation/results/archive/prompt_ablation/
+```
+
+历史实验只用于记录项目迭代，不作为当前正式 Benchmark 结论。
+
+完整评测设计与审计过程见：
+
+```text
+evaluation/EVALUATION_AUDIT.md
+```
+
+---
+
+## 16. 实验结论与边界
+
+当前实验表明：
+
+```text
+BM25
+```
+
+更适合本项目当前技术文档型知识库。
+
+但该结论只适用于当前：
+
+```text
+数据集
+语料规模
+问题类型
+bge-small-zh-v1.5
+```
+
+并不代表 BM25 在所有 RAG 场景中都优于 Dense Retrieval。
+
+如果后续：
+
+- 知识库扩大；
+- 用户提问更加口语化；
+- 换用更强 Embedding；
+- 增加 Cross Encoder Reranker；
+
+需要重新运行 Benchmark 决定新的 Retrieval 策略。

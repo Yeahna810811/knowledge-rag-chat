@@ -2,10 +2,10 @@
   "config": {
     "dense_impl": "localbge",
     "metric": "bigram",
-    "noise_corpus": false,
+    "noise_corpus": true,
     "chunk_size": 500,
     "chunk_overlap": 50,
-    "chunks": 45,
+    "chunks": 46,
     "corpus": [
       "/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/api_guide.md",
       "/Users/killg/Desktop/knowledge-rag-chat/evaluation/corpus/deployment_guide.md",
@@ -34,6 +34,7 @@
       "/Users/killg/Desktop/knowledge-rag-chat/evaluation/extended_noise/knowledge-rag-chat__README__006.md",
       "/Users/killg/Desktop/knowledge-rag-chat/evaluation/extended_noise/knowledge-rag-chat__README__007.md",
       "/Users/killg/Desktop/knowledge-rag-chat/evaluation/extended_noise/knowledge-rag-chat__README__008.md",
+      "/Users/killg/Desktop/knowledge-rag-chat/evaluation/extended_noise/knowledge-rag-chat__README__009.md",
       "/Users/killg/Desktop/knowledge-rag-chat/evaluation/extended_noise/local_rag__README__000.md",
       "/Users/killg/Desktop/knowledge-rag-chat/evaluation/extended_noise/local_rag__README__001.md",
       "/Users/killg/Desktop/knowledge-rag-chat/evaluation/extended_noise/local_rag__README__002.md",
@@ -53,42 +54,42 @@
     ]
   },
   "random_baseline": {
-    "1": 0.0222,
-    "3": 0.0667,
-    "5": 0.1111
+    "1": 0.0217,
+    "3": 0.0652,
+    "5": 0.1087
   },
   "strategies": [
     {
       "name": "dense",
-      "hit_at_1": 0.6125,
+      "hit_at_1": 0.625,
       "hit_at_3": 0.775,
-      "hit_at_5": 0.825,
-      "mrr": 0.6973,
-      "avg_first_rank": 1.455
+      "hit_at_5": 0.8375,
+      "mrr": 0.706,
+      "avg_first_rank": 1.493
     },
     {
       "name": "bm25",
-      "hit_at_1": 0.8375,
+      "hit_at_1": 0.825,
       "hit_at_3": 0.95,
       "hit_at_5": 0.975,
-      "mrr": 0.8931,
-      "avg_first_rank": 1.244
+      "mrr": 0.8869,
+      "avg_first_rank": 1.256
     },
     {
       "name": "hybrid(1:1)",
       "hit_at_1": 0.7,
-      "hit_at_3": 0.9,
+      "hit_at_3": 0.8875,
       "hit_at_5": 0.925,
-      "mrr": 0.7958,
-      "avg_first_rank": 1.365
+      "mrr": 0.7927,
+      "avg_first_rank": 1.392
     },
     {
       "name": "hybrid+mmr",
       "hit_at_1": 0.7,
       "hit_at_3": 0.875,
-      "hit_at_5": 0.925,
-      "mrr": 0.7842,
-      "avg_first_rank": 1.473
+      "hit_at_5": 0.9375,
+      "mrr": 0.786,
+      "avg_first_rank": 1.533
     }
   ],
   "weight_sweep": [],
@@ -131,7 +132,7 @@
       "q035": 1,
       "q036": null,
       "q037": 1,
-      "q038": null,
+      "q038": 5,
       "q039": 1,
       "q040": 4,
       "q051": 1,
@@ -142,7 +143,7 @@
       "q056": 1,
       "q057": null,
       "q058": 4,
-      "q059": 2,
+      "q059": 1,
       "q060": 1,
       "q061": 1,
       "q062": 1,
@@ -205,7 +206,7 @@
       "q027": 2,
       "q028": 1,
       "q029": 1,
-      "q030": 2,
+      "q030": 4,
       "q031": 1,
       "q032": 1,
       "q033": 1,

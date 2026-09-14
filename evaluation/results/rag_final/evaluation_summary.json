@@ -1,0 +1,41 @@
+{
+  "dataset": "/Users/killg/Desktop/knowledge-rag-chat/evaluation/eval_dataset_v3.jsonl",
+  "retriever": "bm25",
+  "corpus_files": 44,
+  "chunks": 46,
+  "chunk_size": 500,
+  "chunk_overlap": 50,
+  "questions": 100,
+  "answerable_questions": 80,
+  "unanswerable_questions": 20,
+  "retrieval": {
+    "hit@1": 0.8125,
+    "hit@3": 0.95,
+    "hit@5": 0.975,
+    "mrr": 0.8806
+  },
+  "latency": {
+    "retrieval": {
+      "avg_ms": 0.82,
+      "p50_ms": 0.66,
+      "p95_ms": 1.13
+    },
+    "end_to_end": {
+      "avg_ms": 3485.42,
+      "p50_ms": 3289.74,
+      "p95_ms": 5328.89
+    }
+  },
+  "answering": {
+    "basic_correctness": 0.8125,
+    "refusal_accuracy": 1.0
+  },
+  "llm_judge": {
+    "correctness": 0.97,
+    "faithfulness": 0.993,
+    "relevance": 0.969,
+    "safe_refusal_unanswerable": 1.0,
+    "judged_questions": 100,
+    "judged_unanswerable": 20
+  }
+}
