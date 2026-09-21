@@ -1,18 +1,25 @@
-"""重排层：融合之后的精排。
+"""检索结果重排模块。
 
-为什么要单独一层重排：
-召回层（稠密 / BM25）为了速度，只能对 query 和 doc 分别独立编码（bi-encoder），
-query 和 doc 之间没有交互，所以它对「字面不重合但语义相关」和「字面高度重合
-但答非所问」的区分力都有限。重排层把 top-N（N 远小于全库）拿出来，做
-query-doc 的交叉计算，精度高但慢——这就是经典的 召回-重排 两段式。
+召回阶段使用 Dense 或 BM25 快速获取候选文档，但召回分数并不一定能够
+准确反映 Query 与候选文档之间的最终相关性。
 
-本模块提供三种实现，覆盖不同成本档位：
-- NoOpReranker：默认，不重排。没有模型权重时系统必须照常工作。
-- MMRReranker：零依赖，用 Jaccard 相似度做去冗余。对本项目尤其有用，
-  因为 chunk_overlap=50 意味着相邻 chunk 天然高度相似，Top-4 里经常有两段
-  几乎重复的内容，白白占用上下文窗口。
-- CrossEncoderReranker：需要 sentence-transformers + BAAI/bge-reranker-base
-  （约 1.1GB）。延迟高（每条候选一次 forward），只建议对 top-20 使用。
+对于 Dense Retrieval，Query 和 Document 通常分别编码为向量后计算相似度；
+BM25 则基于词频、IDF 和文档长度等统计信息进行匹配。
+重排阶段只处理召回得到的少量候选文档，因此可以使用计算成本更高的方法
+进一步优化候选结果的顺序。
+
+本模块提供三种重排策略：
+
+- NoOpReranker：
+  不执行重排，直接保留原始召回顺序，用于默认或无额外模型的场景。
+
+- MMRReranker：
+  基于候选文档之间的相似度进行去冗余，降低高度重复 chunk 同时进入
+  Context 的概率。对于存在 chunk_overlap 的知识库，可以提高上下文多样性。
+
+- CrossEncoderReranker：
+  使用 Cross-Encoder 对 Query-Document 对进行联合打分，并根据相关性重新排序。
+  计算成本高于召回阶段，因此通常只应用于较小的候选集合。
 """
 
 from __future__ import annotations
