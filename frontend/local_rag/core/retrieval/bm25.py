@@ -33,15 +33,15 @@ class BM25Config:
     k1: float = 1.5        # 词频饱和系数，常用 1.2~2.0
     b: float = 0.75        # 长度归一系数，0~1
     ngram: int = 2         # 中文 n-gram 上限
-    delta: float = 0.5     # IDF 平滑项，避免出现负 IDF
+    delta: float = 0.5  # IDF 平滑项，改善小语料下的数值稳定性
 
 
 @dataclass
 class BM25Index:
-    """可增量构建的 BM25 倒排索引。
+    """BM25 索引与打分器。
 
-    构建后不可变语义：调用 build() 之前 search() 一律返回空列表，
-    这样上层（HybridRetriever）不需要额外判断「索引建没建」。
+    调用 build() 时会根据传入的全部文档重新构建统计信息；
+    调用 build() 之前，search() 返回空列表。
     """
 
     config: BM25Config = field(default_factory=BM25Config)
@@ -96,7 +96,7 @@ class BM25Index:
 
     # ---------------- 只读访问器（供查询改写等上层复用） ----------------
     def idf(self, term: str) -> float:
-        """单个词的 IDF。没在语料里出现过的词返回 0，表示「无区分度」。"""
+        """返回单个词的 IDF；未出现在语料中的词返回 0，不参与 BM25 打分。"""
         return self._idf.get(term, 0.0)
 
     def term_frequencies(self, doc_index: int) -> dict[str, int]:
