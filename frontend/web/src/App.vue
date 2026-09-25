@@ -116,7 +116,14 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
             </div>
             <div class="bubble">
-              <div v-if="msg.role === 'assistant'" class="md" v-html="renderMarkdown(msg.content)" />
+              <!-- 流式过程中按纯文本渲染：半截的 ``` 或未闭合的 ** 会被
+                   markdown 解析器渲染成奇怪的东西，等 done 再转成富文本 -->
+              <template v-if="msg.role === 'assistant'">
+                <div v-if="msg.streaming" class="plain streaming-text">
+                  {{ msg.content }}<span class="caret"></span>
+                </div>
+                <div v-else class="md" v-html="renderMarkdown(msg.content)" />
+              </template>
               <div v-else class="plain">{{ msg.content }}</div>
               <div v-if="msg.sources?.length" class="sources">
                 <details>
@@ -137,7 +144,9 @@
             </div>
           </div>
 
-          <div v-if="busy && !error" class="msg assistant">
+          <!-- 流式一旦开始，气泡里已经在长字了，再挂一个"正在思考"的
+               三点动画就是自相矛盾的 UI -->
+          <div v-if="busy && !error && !streaming" class="msg assistant">
             <div class="avatar bot">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" /><circle cx="12" cy="12" r="4" /></svg>
             </div>
@@ -180,11 +189,11 @@ import { nextTick, onMounted, ref } from "vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import {
-  askQuestion,
   clearHistory,
   fetchHistory,
   fetchStatus,
   resetKnowledgeBase,
+  streamAsk,
   type ChatMode,
   type SourceItem,
   type StatusResponse,
@@ -196,12 +205,16 @@ interface ChatMessage {
   content: string;
   sources?: SourceItem[];
   agents?: string[];
+  /** 正在流式输出：此时按纯文本渲染，避免半个 markdown 块被渲染成乱码 */
+  streaming?: boolean;
 }
 
 const mode = ref<ChatMode>("rag");
 const draft = ref("");
 const busy = ref(false);
 const asking = ref(false);
+/** 已经有内容在往屏幕上吐了（此时不该再显示"正在思考"的打字动画） */
+const streaming = ref(false);
 const error = ref("");
 const uploadTip = ref("");
 const uploadOk = ref(false);
@@ -232,6 +245,17 @@ async function scrollToBottom() {
   if (chatBox.value) {
     chatBox.value.scrollTop = chatBox.value.scrollHeight;
   }
+}
+
+// 流式时每个 token 都滚一次会把主线程压满：合并到每帧最多一次。
+let scrollScheduled = false;
+function scheduleScroll() {
+  if (scrollScheduled) return;
+  scrollScheduled = true;
+  requestAnimationFrame(() => {
+    scrollScheduled = false;
+    void scrollToBottom();
+  });
 }
 
 function autoGrow(e?: Event) {
@@ -323,26 +347,54 @@ async function onAsk() {
   autoGrow();
   await scrollToBottom();
   controller.value = new AbortController();
+
+  // 先把空气泡放上去，后面每个 delta 直接往里追加——
+  // 这是"打字机效果"的关键：用户看到的是逐步长出来的文字，
+  // 而不是等十几秒后整段蹦出来。
+  const reply: ChatMessage = {
+    role: "assistant",
+    content: "",
+    sources: [],
+    agents: [],
+    streaming: true,
+  };
+  messages.value.push(reply);
+
   try {
-    const result = await askQuestion(question, mode.value, controller.value.signal);
-    messages.value.push({
-      role: "assistant",
-      content: result.answer,
-      sources: result.sources,
-      agents: result.agent_trace,
+    streaming.value = true;
+    await streamAsk(question, mode.value, controller.value.signal, {
+      onSources: (sources) => {
+        reply.sources = sources;
+      },
+      onDelta: (text) => {
+        reply.content += text;
+        scheduleScroll();
+      },
+      onDone: (payload) => {
+        reply.content = payload.answer;
+        reply.sources = payload.sources;
+        reply.agents = payload.agent_trace;
+        reply.streaming = false;
+      },
+      onError: (message) => {
+        error.value = message;
+        reply.content = reply.content || `请求失败：${message}`;
+        reply.streaming = false;
+      },
     });
     await refreshStatus();
   } catch (e) {
     if ((e as Error)?.name === "AbortError") {
-      messages.value.push({ role: "assistant", content: "已停止生成。" });
+      // 主动停止：已经吐出来的内容保留（服务端也把这部分落库了），
+      // 只是补一个"已停止"的标记，不让用户以为回答就这么长。
+      reply.content = reply.content ? `${reply.content}\n\n_（已停止生成）_` : "已停止生成。";
     } else {
       error.value = e instanceof Error ? e.message : String(e);
-      messages.value.push({
-        role: "assistant",
-        content: `请求失败：${error.value}`,
-      });
+      reply.content = reply.content || `请求失败：${error.value}`;
     }
+    reply.streaming = false;
   } finally {
+    streaming.value = false;
     busy.value = false;
     asking.value = false;
     controller.value = null;

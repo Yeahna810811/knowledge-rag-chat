@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+from typing import AsyncIterator
+
+import anyio
 
 from frontend.local_rag.config.settings import Settings, get_settings
 from frontend.local_rag.core.agents import AgentOrchestrator
@@ -240,6 +243,98 @@ class KnowledgeService:
             session_id, question, result["answer"], mode, fallback_turns=len(history)
         )
         return result
+
+    # ------------------------------------------------------------------ 流式
+    async def astream_ask(
+        self,
+        question: str,
+        session_id: str = "default",
+        mode: str = "rag",
+    ) -> AsyncIterator[dict]:
+        """流式问答：产出事件字典，由 api 层翻译成 SSE 帧。
+
+        事件序列：meta → sources（仅 rag）→ trace → delta* → done
+        出错时发 error 事件而不是抛异常——响应头已经在 SSE 握手时发出去了，
+        这时候抛异常只能中断连接，前端拿不到任何可读的错误信息。
+
+        两处必须卸载到线程池，否则事件循环会被堵死：
+        1. self.orchestrator 首次访问会触发 _ensure_runtime()，
+           里面可能加载几百 MB 的 embedding 模型；
+        2. 读历史 / 写历史是同步 SQLAlchemy 调用。
+        """
+        question = (question or "").strip()
+        if not question:
+            yield {"event": "error", "data": {"message": "问题内容不能为空"}}
+            return
+
+        mode = (mode or "rag").lower()
+        chunks: list[str] = []
+        sources: list[dict] = []
+        agent_trace: list[str] = []
+
+        history = await anyio.to_thread.run_sync(
+            lambda: self._recent_history(session_id, limit=MAX_HISTORY_TURNS)
+        )
+        yield {
+            "event": "meta",
+            "data": {"question": question, "session_id": session_id, "mode": mode},
+        }
+
+        try:
+            orchestrator = await anyio.to_thread.run_sync(lambda: self.orchestrator)
+            async for event in orchestrator.astream(
+                question, history=history, mode=mode
+            ):
+                name = event.get("event")
+                data = event.get("data") or {}
+                if name == "sources":
+                    sources = data.get("sources", [])
+                elif name == "trace":
+                    agent_trace = data.get("agent_trace", [])
+                elif name == "delta":
+                    chunks.append(data.get("text", ""))
+                yield event
+        except (anyio.get_cancelled_exc_class(), GeneratorExit):
+            # 客户端断开（关页面 / AbortController / 代理超时）。
+            # 两种投递方式都要覆盖：ASGI 服务器通常是 cancel（CancelledError），
+            # 显式 aclose() 走的是 GeneratorExit。少了后者，
+            # "用代码手动关流"这条路径就会丢答案。
+            # 已经生成出来的部分照样落库——用户等了十几秒不该一无所获。
+            # shield=True 是关键：当前作用域已经被取消了，不屏蔽的话
+            # 这条写库 await 会立刻跟着被取消，等于白写。
+            partial = "".join(chunks)
+            if partial:
+                with anyio.CancelScope(shield=True):
+                    await anyio.to_thread.run_sync(
+                        lambda: self._append_turn(
+                            session_id, question, partial, mode, len(history)
+                        )
+                    )
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("流式问答失败: %s", exc)
+            yield {"event": "error", "data": {"message": f"问答失败：{exc}"}}
+            return
+
+        answer = "".join(chunks)
+        history_turns = await anyio.to_thread.run_sync(
+            lambda: self._append_turn(
+                session_id, question, answer, mode, fallback_turns=len(history)
+            )
+        )
+        yield {
+            "event": "done",
+            "data": {
+                "question": question,
+                "answer": answer,
+                "sources": sources,
+                "mode": mode,
+                "session_id": session_id,
+                "history_turns": history_turns,
+                "agent_trace": agent_trace,
+            },
+        }
+
 
     # ------------------------------------------------------------ 会话持久化
     def _recent_history(self, session_id: str, limit: int) -> list[dict]:

@@ -35,6 +35,10 @@ redis>=5,<7
 # fakeredis 让 tests/test_redis.py 在不需要 Redis 服务的情况下跑完单元用例。
 # 注意它不支持 Lua(EVAL)，所以限流的 Lua 分支只有连真实 Redis 时才覆盖得到。
 fakeredis>=2.20
+# httpx 的 ASGITransport 让 tests/test_async_sse.py 能直接向 ASGI app 发请求，
+# 不必真的起一个 uvicorn 进程——SSE 的字节级帧格式也能原样校验。
+# （SSE 本身是标准库级别的手写实现，不需要 sse-starlette 之类的额外依赖。）
+httpx>=0.27
 
 # Document loaders
 pypdf>=5.1.0

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, AsyncIterator
 
 from langchain_openai import ChatOpenAI
 from langsmith import traceable
@@ -23,6 +23,29 @@ CHAT_SYSTEM_PROMPT = """你是一个友好、专业的 AI 对话助手。
 """
 
 
+def _chunk_text(content: Any) -> str:
+    """把 LLM chunk 的 content 规整成纯文本增量。
+
+    不同 provider 的 content 形状不一样：多数是 str，多模态模型会给
+    list[dict]（形如 [{"type": "text", "text": "..."}]）。这里统一收敛成
+    字符串，取不到文本时返回空串——宁可少发一个空 delta，也不要把
+    "{'type': 'text', ...}" 这种字典 repr 打到用户屏幕上。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+        return "".join(parts)
+    if isinstance(content, dict) and "text" in content:
+        return str(content["text"])
+    return ""
+
+
 class GenerationAgent(BaseAgent):
     """Generate answers in RAG (grounded customer-service) or plain chat mode."""
 
@@ -41,15 +64,20 @@ class GenerationAgent(BaseAgent):
             temperature=0.5,
         )
 
-    @traceable(name="generation_agent", run_type="llm")
-    def run(
+    def build_messages(
         self,
         question: str = "",
         history: list[dict] | None = None,
         sources: list[dict] | None = None,
         mode: str = "rag",
-        **_: Any,
-    ) -> AgentResult:
+    ) -> list[dict]:
+        """把「问题 + 历史 + 检索到的资料」编成 ChatOpenAI 的 messages。
+
+        抽出来的原因：一次性生成（invoke）和流式生成（astream）必须走
+        **完全相同**的拼装逻辑。否则流式和非流式会得到两套不同的 prompt，
+        出现"流式回答质量变差"这种最难排查的问题——大家只会怀疑流式的锅，
+        实际是 prompt 悄悄分叉了。
+        """
         history = history or []
         sources = sources or []
         mode = (mode or "rag").lower()
@@ -70,6 +98,22 @@ class GenerationAgent(BaseAgent):
             messages.append({"role": "user", "content": turn["question"]})
             messages.append({"role": "assistant", "content": turn["answer"]})
         messages.append({"role": "user", "content": user_content})
+        return messages
+
+    @traceable(name="generation_agent", run_type="llm")
+    def run(
+        self,
+        question: str = "",
+        history: list[dict] | None = None,
+        sources: list[dict] | None = None,
+        mode: str = "rag",
+        **_: Any,
+    ) -> AgentResult:
+        mode = (mode or "rag").lower()
+        sources = sources or []
+        messages = self.build_messages(
+            question=question, history=history, sources=sources, mode=mode
+        )
 
         response = self.llm.invoke(messages)
         answer = response.content if isinstance(response.content, str) else str(response.content)
@@ -84,3 +128,32 @@ class GenerationAgent(BaseAgent):
                 "sources": sources if mode == "rag" else [],
             },
         )
+
+    async def astream_text(
+        self,
+        question: str = "",
+        history: list[dict] | None = None,
+        sources: list[dict] | None = None,
+        mode: str = "rag",
+    ) -> AsyncIterator[str]:
+        """流式生成：逐个 chunk 产出纯文本增量。
+
+        这里刻意 **不** 套 @traceable：LangSmith 的 traceable 面向
+        "一次调用一次返回"，套在异步生成器上会把整条流的生命周期搅乱，
+        而且会让流式链路多一层不可控的包装。流式链路的可观测性
+        留给后续 Observability 阶段统一处理。
+
+        另一个细节：只 yield 非空文本。上游 chunk 里有相当比例是空串
+        （尤其是首 chunk 带 role 信息时），全量转发会让前端多渲染几百次
+        空字符串。
+        """
+        mode = (mode or "rag").lower()
+        sources = sources or []
+        messages = self.build_messages(
+            question=question, history=history, sources=sources, mode=mode
+        )
+
+        async for chunk in self.llm.astream(messages):
+            text = _chunk_text(chunk.content)
+            if text:
+                yield text
