@@ -89,7 +89,11 @@ def create_router(
 
     @router.post("/ask/stream")
     async def ask_stream(req: AskRequest):
-        """流式问答：以 SSE 逐块下发 token，同时把完整答案落库。
+        """流式问答：以 SSE 逐块下发 token。
+
+        注意"落库"这个词在这里是有条件的：只有生成正常走完，才会把
+        question + 完整 answer 写成一条 turn。中途 abort / 断开 / 报错
+        不写——详见 KnowledgeService.astream_ask 的方法注释。
 
         两个必须在这里（而不是流里面）做完的事：
         1. 限流。响应头一旦发出去就改不了状态码了，所以 429 只能在

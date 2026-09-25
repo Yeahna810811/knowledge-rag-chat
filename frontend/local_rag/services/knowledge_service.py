@@ -257,6 +257,20 @@ class KnowledgeService:
         出错时发 error 事件而不是抛异常——响应头已经在 SSE 握手时发出去了，
         这时候抛异常只能中断连接，前端拿不到任何可读的错误信息。
 
+        持久化纪律（阶段 3 验收口径，改动前请先读这段）：
+        MySQL 里只允许出现「生成正常走完」的 turn。客户端 abort、代理超时、
+        CancelledError、GeneratorExit、LLM streaming error，一律不写
+        messages 表，只打结构化日志。
+
+        理由不是洁癖：半截答案一旦混进历史，下一轮就会作为 assistant
+        上下文被喂回模型，模型会学着说半截话、学着在被打断的地方收尾。
+        这比丢掉这一轮糟糕得多——丢掉的代价是用户重问一次，污染历史
+        的代价是整个会话的质量持续劣化，而且很难归因。
+
+        取消 / 中断时可以写日志或 trace，方便统计中断率；想要保留半成品，
+        应该显式加 status=cancelled/failed/incomplete 的数据模型，
+        而不是复用正常 messages 表。本阶段不扩表，直接不保存。
+
         两处必须卸载到线程池，否则事件循环会被堵死：
         1. self.orchestrator 首次访问会触发 _ensure_runtime()，
            里面可能加载几百 MB 的 embedding 模型；
@@ -294,34 +308,48 @@ class KnowledgeService:
                 elif name == "delta":
                     chunks.append(data.get("text", ""))
                 yield event
-        except (anyio.get_cancelled_exc_class(), GeneratorExit):
-            # 客户端断开（关页面 / AbortController / 代理超时）。
-            # 两种投递方式都要覆盖：ASGI 服务器通常是 cancel（CancelledError），
-            # 显式 aclose() 走的是 GeneratorExit。少了后者，
-            # "用代码手动关流"这条路径就会丢答案。
-            # 已经生成出来的部分照样落库——用户等了十几秒不该一无所获。
-            # shield=True 是关键：当前作用域已经被取消了，不屏蔽的话
-            # 这条写库 await 会立刻跟着被取消，等于白写。
-            partial = "".join(chunks)
-            if partial:
-                with anyio.CancelScope(shield=True):
-                    await anyio.to_thread.run_sync(
-                        lambda: self._append_turn(
-                            session_id, question, partial, mode, len(history)
-                        )
-                    )
+        except anyio.get_cancelled_exc_class():
+            # 客户端断开 / AbortController / 代理超时 / 外层任务被 cancel。
+            # 只记录，不落库：半成品会污染下一轮的上下文（见方法顶注释）。
+            self._log_stream_interrupted(
+                session_id, question, mode, chunks, reason="client_disconnected"
+            )
+            raise
+        except GeneratorExit:
+            # 显式 aclose() 走的是这条路径，和 cancel 是两条独立的投递方式。
+            # 注意：捕获 GeneratorExit 后只能清理并原样抛出，
+            # 这里绝不能 yield——生成器已经没有接收方了。
+            self._log_stream_interrupted(
+                session_id, question, mode, chunks, reason="stream_closed"
+            )
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.warning("流式问答失败: %s", exc)
+            # LLM streaming error：半截答案同样不入库。
+            self._log_stream_interrupted(
+                session_id, question, mode, chunks, reason="generation_error"
+            )
+            logger.warning("流式问答失败（未持久化）: %s", exc)
             yield {"event": "error", "data": {"message": f"问答失败：{exc}"}}
             return
 
+        # ---- 只有走到这里，才算「生成正常走完」----
         answer = "".join(chunks)
-        history_turns = await anyio.to_thread.run_sync(
-            lambda: self._append_turn(
-                session_id, question, answer, mode, fallback_turns=len(history)
-            )
-        )
+        try:
+            # shield=True 的作用现在只剩一件事：保护这次最终写入不被取消打断。
+            # 最后一个 token 发出去之后，客户端随时可能断开（用户手快、代理超时），
+            # 取消会在下一个 await 点投递。不屏蔽的话这条 write 会跟着被取消，
+            # 变成"明明答完了却没存"——和原来的"没答完却存了"是两个方向的同一种错。
+            with anyio.CancelScope(shield=True):
+                history_turns = await anyio.to_thread.run_sync(
+                    lambda: self._append_turn(
+                        session_id, question, answer, mode, fallback_turns=len(history)
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001
+            # 写库失败不该让已经生成好的答案退化成 error 事件：
+            # 回答是主链路，持久化是副链路。
+            logger.warning("流式最终落库失败，本轮未持久化: %s", exc)
+            history_turns = len(history) + 1
         yield {
             "event": "done",
             "data": {
@@ -335,6 +363,33 @@ class KnowledgeService:
             },
         }
 
+
+    def _log_stream_interrupted(
+        self,
+        session_id: str,
+        question: str,
+        mode: str,
+        chunks: list[str],
+        reason: str,
+    ) -> None:
+        """丢弃这一轮时留痕：只写日志，不碰 MySQL。
+
+        刻意做成同步方法且不做任何 await——它被CancelledError / GeneratorExit
+        分支调用，那时所在作用域已经被取消，任何 await 都会立刻再抛取消。
+
+        logger 用 %s 惰性格式化而不是 f-string：中断率高的场景下，
+        省掉的是每条日志的字符串拼接成本。
+        """
+        logger.warning(
+            "流式问答未完成，本轮不入库: reason=%s session=%s mode=%s "
+            "question_len=%d partial_len=%d discarded_preview=%s",
+            reason,
+            session_id,
+            mode,
+            len(question),
+            sum(len(c) for c in chunks),
+            "".join(chunks)[:80],
+        )
 
     # ------------------------------------------------------------ 会话持久化
     def _recent_history(self, session_id: str, limit: int) -> list[dict]:

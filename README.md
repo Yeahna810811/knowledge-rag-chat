@@ -647,9 +647,21 @@ data: {"answer": "报销流程是…", "history_turns": 1, ...}
   生成器内部的 await（比如那次还没返回的 LLM 网络读），
   **把生成器本身取消掉**——心跳反而成了杀死流的东西。
   实测朴素实现下 3 个事件只能收到 1 个。
-- **客户端断开**（关页面 / AbortController / 代理超时）时，
-  已经生成出来的部分照常落库。关键是 `CancelScope(shield=True)`：
-  当前作用域已被取消，不屏蔽的话这条写库 `await` 会立刻跟着被取消，等于白写。
+- **客户端断开**（关页面 / AbortController / 代理超时）、`CancelledError`、
+  `GeneratorExit`、以及 LLM 中途报错，**都不写 MySQL**，只打一条结构化日志
+  （`reason=client_disconnected / stream_closed / generation_error`，带已丢弃
+  内容的长度与预览）。保留半截答案看着是"不浪费"，代价是它会被当作
+  assistant 上下文喂回下一轮，模型会学着说半截话——比丢掉这一轮糟得多。
+  真要保留半成品，应该加 `status=cancelled/failed/incomplete` 的数据模型，
+  而不是复用正常 `messages` 表。本阶段不扩表。
+- **MySQL 只在生成正常走完时写一次**，不是 per-token 写：
+  `done` 之前那唯一一次 `_append_turn`。
+- 那唯一一次写入用 `CancelScope(shield=True)` 兜住：最后一个 token 发出后，
+  客户端随时可能断开，取消会在下一个 `await` 点投递，不屏蔽就变成
+  "答完了却没存"——和上面"没答完却存了"是两个方向的同一种错。
+  注意 shield 只对 anyio 自己投的取消生效（Starlette 收到 `http.disconnect`
+  后 cancel 包住 `body_iterator` 的 task group 正是这条路径）；
+  裸 `asyncio.Task.cancel()` 由 asyncio 直接往协程里抛，会绕过 shield。
 
 ### 6.6 限流
 
@@ -1062,7 +1074,10 @@ SSE 帧边界 / data 单行 / 中文不转义 / 心跳是注释帧
 delta 拼接等于 done.answer
 chat 模式不下发 sources
 上游异常转成 error 事件（不中断连接）
-客户端断开后已生成部分落库（cancel 与 aclose 两条路径）
+正常完成：恰好写 1 次库、恰好 1 条完整 turn（无 per-token 写）
+abort（CancelledError）/ GeneratorExit / 中途取消 / LLM streaming error
+  均「不写库」，历史中不残留半截 assistant answer
+生成结束后立刻取消：最终写入受 shield 保护仍然成功
 Redis 故障下流式 fail-open
 流式端点限流 429 + Retry-After
 并发两路流不串台
@@ -1078,7 +1093,7 @@ tests/test_database.py              51 passed  （SQLite 默认）
                                     56 passed  （连真实 MySQL 8.4）
 tests/test_redis.py                 71 passed  （fakeredis 默认）
                                     80 passed  （连真实 Redis 7）
-tests/test_async_sse.py             63 passed  （httpx + ASGITransport）
+tests/test_async_sse.py             82 passed  （httpx + ASGITransport）
 ```
 
 ---

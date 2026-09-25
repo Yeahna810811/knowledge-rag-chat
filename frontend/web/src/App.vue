@@ -385,8 +385,9 @@ async function onAsk() {
     await refreshStatus();
   } catch (e) {
     if ((e as Error)?.name === "AbortError") {
-      // 主动停止：已经吐出来的内容保留（服务端也把这部分落库了），
-      // 只是补一个"已停止"的标记，不让用户以为回答就这么长。
+      // 主动停止：屏幕上保留已经吐出来的内容，让用户看得见读到哪了，
+      // 但服务端不会把这段半截答案入库——半截答案进历史会被下一轮当上下文
+      // 喂回模型。刷新页面后这一轮就消失了，这是刻意的。
       reply.content = reply.content ? `${reply.content}\n\n_（已停止生成）_` : "已停止生成。";
     } else {
       error.value = e instanceof Error ? e.message : String(e);

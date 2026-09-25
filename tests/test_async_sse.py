@@ -7,9 +7,14 @@
 A. 纯帧格式层（只要 anyio）——帧边界、data 单行、心跳是注释帧。
    这一层专门用来挡"看起来能跑、换了个前端就收不到"的脏帧。
 B. 服务层（需要 KnowledgeService 等重依赖）——事件顺序、delta 拼接、
-   落库、断连部分持久化、fail-open。
+   持久化纪律、fail-open。
 C. HTTP 层（httpx + ASGITransport）——真发请求，按字节解析 SSE，
    验证状态码 / content-type / 限流 429 / 并发不串扰。
+
+持久化纪律是本文件的重点：只有「生成正常走完」才允许落一条完整 turn，
+abort / disconnect / GeneratorExit / CancelledError / LLM streaming error
+一律不写库。这组用例反过来锁死另一个方向的 bug——把半截答案存进历史，
+会被下一轮当上下文喂回模型。
 
 不引 pytest：与 tests/test_redis.py / test_database.py 保持同一套
 无依赖的自带 runner，CI 里一条命令就能跑。
@@ -24,6 +29,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -179,7 +185,62 @@ class FakeAsyncOrchestrator:
             yield {"event": "delta", "data": {"text": text}}
 
 
-# ------------------------------------------------------------------ SSE 解析
+class SlowPersistStore:
+    """把最终那次写库变慢，用来卡住"生成刚结束、正在落库"这个窗口。
+
+    只有让写入慢下来，才能在它还握住锁的时候投递取消，
+    从而验证 CancelScope(shield=True) 真的护住了这次写入，
+    而不是碰巧写完了。
+    """
+
+    def __init__(self, inner: Any, delay: float = 0.3) -> None:
+        self._inner = inner
+        self.delay = delay
+        self.append_calls = 0
+        self.write_started = threading.Event()
+
+    def append_turn(self, *args: Any, **kwargs: Any) -> Any:
+        self.append_calls += 1
+        self.write_started.set()
+        time.sleep(self.delay)
+        return self._inner.append_turn(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class CountingStore:
+    """数写库次数：per-token 写库会立刻在这里露馅。"""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.append_calls = 0
+
+    def append_turn(self, *args: Any, **kwargs: Any) -> Any:
+        self.append_calls += 1
+        return self._inner.append_turn(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def no_leftover(
+    service: Any, session_id: str, partial_markers: tuple[str, ...]
+) -> tuple[bool, str]:
+    """确认某个 session 里没有留下半截答案。
+
+    返回 (是否干净, 说明)。除了看历史条数，还要扫一遍内容里有没有
+    "只生成了一部分"的痕迹——只看条数的话，写成了半截但恰好也是 1 条
+    这种 bug 会被漏过去。
+    """
+    history = service.get_history(session_id)["history"]
+    if history:
+        answers = [item["answer"] for item in history]
+        for marker in partial_markers:
+            if any(marker in answer for answer in answers):
+                return (False, f"留下了半截答案: {answers}")
+        return (False, f"历史不该有记录却有 {len(history)} 条: {answers}")
+    return (True, "")
 def parse_frame(frame: str) -> tuple[str, Any]:
     """把单个 SSE 帧解析成 (event 名, data)。心跳返回 ("heartbeat", None)。"""
     if is_heartbeat(frame):
@@ -320,24 +381,32 @@ def test_stream_event_order() -> None:
 
 
 def test_persisted_after_stream() -> None:
-    print("\n[4] 流完后落库")
+    print("\n[4] 正常生成结束：恰好落 1 条完整 turn")
     if not require_heavy("[4] 流完后落库"):
         return
 
     with tempfile.TemporaryDirectory() as tmpdir:
         service, _ = new_service(tmpdir)
+        # CountingStore：把"有没有 per-token 写库"变成可断言的事实。
+        # 4 个 delta 若各自写一次，这里会是 4。
+        store = CountingStore(service.conversation_store)
+        service._conversation_store = store
         events = asyncio.run(
             collect(service, question="问题一", session_id="s1", mode="rag")
         )
         done = [e for e in events if e["event"] == "done"][0]["data"]
 
+        check("整个流程只写了一次库", store.append_calls == 1, str(store.append_calls))
+
         history = service.get_history("s1")["history"]
-        check("历史里落了 1 轮", len(history) == 1, str(len(history)))
+        check("历史里恰好 1 轮", len(history) == 1, str(len(history)))
         check("问题是原问题", history[0]["question"] == "问题一")
         check("答案是拼接后的完整答案", history[0]["answer"] == done["answer"])
+        check("完整答案与所有 delta 一致", done["answer"] == "你好，世界！", done["answer"])
 
         asyncio.run(collect(service, question="问题二", session_id="s1"))
         check("第二轮后变成 2 轮", len(service.get_history("s1")["history"]) == 2)
+        check("两轮共写了两次库", store.append_calls == 2, str(store.append_calls))
 
         other = service.get_history("s2")["history"]
         check("其它 session 不受影响", len(other) == 0)
@@ -368,6 +437,7 @@ def test_error_event() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         boom = FakeAsyncOrchestrator(fail_at=1)
         service, _ = new_service(tmpdir, orchestrator=boom)
+        service._conversation_store = CountingStore(service.conversation_store)
         events = asyncio.run(collect(service, question="会炸的问题", session_id="e1"))
 
         names = [e["event"] for e in events]
@@ -375,6 +445,13 @@ def test_error_event() -> None:
         check("异常之前已经发出过 delta", names.count("delta") == 1)
         check("error 带可读信息", "上游 LLM 抽风" in events[-1]["data"]["message"])
         check("没有 done 事件", "done" not in names)
+        # 出错时那部分已经吐出去的 token 绝不入库（详见 [10]
+        # test_llm_stream_error_does_not_persist，那里断言得更细）
+        check(
+            "error 不写库",
+            service.conversation_store.append_calls == 0,
+            str(service.conversation_store.append_calls),
+        )
 
         empty = asyncio.run(collect(service, question="   ", session_id="e2"))
         check(
@@ -383,10 +460,14 @@ def test_error_event() -> None:
         )
 
 
-def test_disconnect_persists_partial() -> None:
-    print("\n[7] 客户端断开时已生成的部分照常落库")
-    if not require_heavy("[7] 断开时部分落库"):
+def test_abort_does_not_persist() -> None:
+    print("\n[7] 客户端 abort（CancelledError）：不落库")
+    if not require_heavy("[7] abort 不落库"):
         return
+
+    # 完整答案是 "你好，世界！"，只收到前 2 块后 abort —— 用户在
+    # 看到一半时点了"停止生成"。
+    partial_markers = ("你好，", "你好", "世界")
 
     async def scenario(service: Any) -> int:
         gen = service.astream_ask("很长的回答", session_id="d1")
@@ -405,15 +486,26 @@ def test_disconnect_persists_partial() -> None:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         service, _ = new_service(tmpdir)
+        store = CountingStore(service.conversation_store)
+        service._conversation_store = store
         seen = asyncio.run(scenario(service))
-        check("断开前确实收到了 2 个 delta", seen == 2, str(seen))
+        check("abort 前确实收到了 2 个 delta", seen == 2, str(seen))
 
-        history = service.get_history("d1")["history"]
-        check("部分答案已落库", len(history) == 1, str(len(history)))
-        check("落的是已生成的部分", history[0]["answer"] == "你好，", history[0]["answer"] if history else "")
+        clean, why = no_leftover(service, "d1", partial_markers)
+        check("abort 后没有留下答案", clean, why)
+        check("一次都没写库", store.append_calls == 0, str(store.append_calls))
+        check(
+            "history_turns 不会把半成品算进去",
+            service.get_history("d1")["turns"] == 0,
+        )
 
-    # 另一条投递路径：显式 aclose()（GeneratorExit）
-    async def scenario_aclose(service: Any) -> int:
+
+def test_generator_exit_does_not_persist() -> None:
+    print("\n[8] GeneratorExit（显式 aclose）：不落库")
+    if not require_heavy("[8] GeneratorExit 不落库"):
+        return
+
+    async def scenario(service: Any) -> int:
         gen = service.astream_ask("很长的回答", session_id="d2")
         seen = 0
         async for event in gen:
@@ -426,14 +518,132 @@ def test_disconnect_persists_partial() -> None:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         service, _ = new_service(tmpdir)
-        asyncio.run(scenario_aclose(service))
-        history = service.get_history("d2")["history"]
-        check("aclose 路径同样落库", len(history) == 1, str(len(history)))
+        store = CountingStore(service.conversation_store)
+        service._conversation_store = store
+        seen = asyncio.run(scenario(service))
+        check("aclose 前收到 2 个 delta", seen == 2, str(seen))
+
+        clean, why = no_leftover(service, "d2", ("你好，", "你好"))
+        check("GeneratorExit 后没有留下答案", clean, why)
+        check("一次都没写库", store.append_calls == 0, str(store.append_calls))
+
+
+def test_task_cancellation_does_not_persist() -> None:
+    print("\n[9] 流到一半时外层任务被 cancel：不落库")
+    if not require_heavy("[9] 任务取消不落库"):
+        return
+
+    async def scenario(service: Any) -> int:
+        seen = 0
+
+        async def consume() -> None:
+            nonlocal seen
+            async for event in service.astream_ask(
+                "会长的问题", session_id="d3", mode="rag"
+            ):
+                if event["event"] == "delta":
+                    seen += 1
+
+        task = asyncio.create_task(consume())
+        # 20 块 × 30ms ≈ 600ms，这里只等 200ms：
+        # 不管机器快慢，取消都稳定落在"流到一半"这个区间里，
+        # 不会因为 CI 慢一点就整个流完、把这条用例变成空转。
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return seen
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        service, _ = new_service(
+            tmpdir, orchestrator=FakeAsyncOrchestrator(chunks=["字"] * 20, delay=0.03)
+        )
+        store = CountingStore(service.conversation_store)
+        service._conversation_store = store
+        seen = asyncio.run(scenario(service))
+        check("取消前确实流式出过 token", 0 < seen < 20, f"seen={seen}")
+
+        clean, why = no_leftover(service, "d3", ("字",))
+        check("任务取消后没有留下答案", clean, why)
+        check("一次都没写库", store.append_calls == 0, str(store.append_calls))
+
+
+def test_llm_stream_error_does_not_persist() -> None:
+    print("\n[10] LLM streaming error：不保存半截答案")
+    if not require_heavy("[10] 上游报错不落库"):
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # fail_at=1：先吐出 1 个 delta 再炸，这是最容易写脏数据的时序
+        service, _ = new_service(tmpdir, orchestrator=FakeAsyncOrchestrator(fail_at=1))
+        store = CountingStore(service.conversation_store)
+        service._conversation_store = store
+        events = asyncio.run(collect(service, question="会炸的问题", session_id="e3"))
+
+        names = [e["event"] for e in events]
+        check("确实是先出了 delta 再 error", names.count("delta") == 1, str(names))
+        check("最后是 error 事件", names[-1] == "error", str(names))
+
+        clean, why = no_leftover(service, "e3", ("你好",))
+        check("error 之后没有留下半截答案", clean, why)
+        check("一次都没写库", store.append_calls == 0, str(store.append_calls))
+
+
+def test_final_write_survives_cancellation() -> None:
+    print("\n[11] 生成正常结束后立刻取消：最终写入仍受 shield 保护")
+    if not require_heavy("[11] 最终写入不被取消打断"):
+        return
+
+    async def scenario(service: Any, store: SlowPersistStore) -> None:
+        async def consume() -> None:
+            async for _event in service.astream_ask(
+                "完整回答", session_id="f1", mode="rag"
+            ):
+                pass
+
+        # 取消必须走 anyio 自己的 cancel scope —— Starlette 的
+        # StreamingResponse 正是这么干的：收到 http.disconnect 后
+        # cancel 掉包着 body_iterator 的 task group（不是裸 task.cancel()）。
+        #
+        # 区别很大：裸 task.cancel() 由 asyncio 直接往协程里抛 CancelledError，
+        # 会绕过 anyio 的 shield 机制（anyio 的 shield 只拦截它自己投的取消，
+        # 见 _deliver_cancellation 里对 _shield 的判空跳过）。用裸 cancel
+        # 写这条用例，会得到"写入线程还在后台跑、但结果已经没人接"的假象。
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(consume)
+            deadline = time.time() + 5
+            while not store.write_started.is_set() and time.time() < deadline:
+                await anyio.sleep(0.01)
+            # 此刻写库正握着线程池里的那条 await —— 取消它
+            task_group.cancel_scope.cancel()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        service, _ = new_service(tmpdir)
+        store = SlowPersistStore(service.conversation_store, delay=0.3)
+        service._conversation_store = store
+        asyncio.run(scenario(service, store))
+
+        check(
+            "写库确实开始了（否则这条用例没测到东西）",
+            store.write_started.is_set(),
+        )
+        check("整个流程只写了一次库", store.append_calls == 1, str(store.append_calls))
+
+        history = service.get_history("f1")["history"]
+        check("取消后仍然落了 1 条完整 turn", len(history) == 1, str(len(history)))
+        check(
+            "落的是完整答案而不是空或半截",
+            bool(history) and history[0]["answer"] == "你好，世界！",
+            str(history),
+        )
+        check("question 一并入库", bool(history) and history[0]["question"] == "完整回答")
 
 
 def test_stream_fail_open_on_redis_down() -> None:
-    print("\n[8] Redis 故障时流式问答 fail-open")
-    if not require_heavy("[8] Redis 故障 fail-open"):
+    print("\n[12] Redis 故障时流式问答 fail-open")
+    if not require_heavy("[12] Redis 故障 fail-open"):
         return
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -476,8 +686,8 @@ async def post_stream(app: Any, payload: dict) -> tuple[int, dict, list[tuple[st
 
 
 def test_http_stream() -> None:
-    print("\n[9] HTTP 端到端 SSE")
-    if not require_heavy("[9] HTTP 端到端 SSE"):
+    print("\n[13] HTTP 端到端 SSE")
+    if not require_heavy("[13] HTTP 端到端 SSE"):
         return
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -507,8 +717,8 @@ def test_http_stream() -> None:
 
 
 def test_http_rate_limit() -> None:
-    print("\n[10] 流式端点的限流")
-    if not require_heavy("[10] 流式端点限流"):
+    print("\n[14] 流式端点的限流")
+    if not require_heavy("[14] 流式端点限流"):
         return
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -538,8 +748,8 @@ def test_http_rate_limit() -> None:
 
 
 def test_http_concurrent_streams() -> None:
-    print("\n[11] 并发两条流互不串扰")
-    if not require_heavy("[11] 并发两条流"):
+    print("\n[15] 并发两条流互不串扰")
+    if not require_heavy("[15] 并发两条流"):
         return
 
     async def scenario() -> dict[str, str]:
@@ -575,8 +785,8 @@ def test_http_concurrent_streams() -> None:
 
 
 def test_stream_does_not_block_event_loop() -> None:
-    print("\n[12] 流式期间事件循环没有被阻塞")
-    if not require_heavy("[12] 事件循环不被阻塞"):
+    print("\n[16] 流式期间事件循环没有被阻塞")
+    if not require_heavy("[16] 事件循环不被阻塞"):
         return
 
     async def scenario() -> tuple[int, int]:
@@ -610,11 +820,11 @@ def test_stream_does_not_block_event_loop() -> None:
 
 
 def test_real_llm_optional() -> None:
-    print("\n[13] 真实 LLM 流式（可选）")
+    print("\n[17] 真实 LLM 流式（可选）")
     if os.getenv("STREAM_REAL_LLM", "").lower() not in {"1", "true", "yes"}:
         skip("真实 LLM 流式", "未设置 STREAM_REAL_LLM=1，跳过（不消耗额度）")
         return
-    if not require_heavy("[13] 真实 LLM 流式"):
+    if not require_heavy("[17] 真实 LLM 流式"):
         return
 
     from frontend.local_rag.config.settings import get_settings
@@ -645,7 +855,11 @@ def main() -> int:
     test_persisted_after_stream()
     test_chat_mode_has_no_sources()
     test_error_event()
-    test_disconnect_persists_partial()
+    test_abort_does_not_persist()
+    test_generator_exit_does_not_persist()
+    test_task_cancellation_does_not_persist()
+    test_llm_stream_error_does_not_persist()
+    test_final_write_survives_cancellation()
     test_stream_fail_open_on_redis_down()
     test_http_stream()
     test_http_rate_limit()
