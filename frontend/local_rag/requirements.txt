@@ -22,6 +22,20 @@ sentence-transformers>=3.3.0
 # Vector store
 faiss-cpu>=1.9.0
 
+# Database (conversation persistence: SQLAlchemy 2.x + MySQL 8)
+SQLAlchemy>=2.0,<3.0
+PyMySQL>=1.1,<2.0
+# MySQL 8 默认 caching_sha2_password 认证，pymysql 需要 cryptography 才能握手
+cryptography>=42.0
+
+# Cache + rate limit (Redis; 只做加速，不是数据源)
+redis>=5,<7
+
+# Tests
+# fakeredis 让 tests/test_redis.py 在不需要 Redis 服务的情况下跑完单元用例。
+# 注意它不支持 Lua(EVAL)，所以限流的 Lua 分支只有连真实 Redis 时才覆盖得到。
+fakeredis>=2.20
+
 # Document loaders
 pypdf>=5.1.0
 docx2txt>=0.8

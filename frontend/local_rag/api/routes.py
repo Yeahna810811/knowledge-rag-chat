@@ -1,22 +1,29 @@
+from __future__ import annotations
+
 import hashlib
 import hmac
 import time
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from frontend.local_rag.services.knowledge_service import KnowledgeService
+from frontend.local_rag.services.rate_limiter import RateLimiter
+
+# session_id 落库为 String(128)，接口层同步约束，避免超长值打到数据库
+SESSION_ID_FIELD = Field(default="default", min_length=1, max_length=128)
+SESSION_ID_QUERY = Query(default="default", min_length=1, max_length=128)
 
 
 class AskRequest(BaseModel):
     question: str
-    session_id: str = "default"
+    session_id: str = SESSION_ID_FIELD
     mode: Literal["rag", "chat"] = "rag"
 
 
 class SessionRequest(BaseModel):
-    session_id: str = "default"
+    session_id: str = SESSION_ID_FIELD
 
 
 class WebhookRequest(BaseModel):
@@ -24,9 +31,16 @@ class WebhookRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-def create_router(service: KnowledgeService) -> APIRouter:
-    """创建并返回API路由，所有接口共用同一个 KnowledgeService 实例"""
+def create_router(
+    service: KnowledgeService,
+    rate_limiter: RateLimiter | None = None,
+) -> APIRouter:
+    """创建并返回API路由，所有接口共用同一个 KnowledgeService 实例。
+
+    rate_limiter 走显式注入，默认回落到 service 上那个（共享同一个 RedisClient）。
+    """
     router = APIRouter()
+    limiter = rate_limiter if rate_limiter is not None else service.rate_limiter
 
     @router.post("/upload")
     async def upload(file: UploadFile = File(...)):
@@ -41,6 +55,16 @@ def create_router(service: KnowledgeService) -> APIRouter:
 
     @router.post("/ask")
     def ask(req: AskRequest):
+        # 限流放在业务逻辑之前：被限掉的请求不该消耗 LLM 额度。
+        # Redis 挂掉时 check() 是 fail-open，所以这里不会因 Redis 故障拒绝请求。
+        verdict = limiter.check(req.session_id)
+        if not verdict.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=verdict.as_detail(),
+                headers={"Retry-After": str(verdict.retry_after)},
+            )
+
         try:
             return service.ask(req.question, session_id=req.session_id, mode=req.mode)
         except ValueError as e:
@@ -53,8 +77,13 @@ def create_router(service: KnowledgeService) -> APIRouter:
         return service.status()
 
     @router.get("/history")
-    def history(session_id: str = "default"):
-        return service.get_history(session_id=session_id)
+    def history(session_id: str = SESSION_ID_QUERY):
+        try:
+            return service.get_history(session_id=session_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"读取会话历史失败：{e}")
 
     @router.delete("/reset")
     def reset():
@@ -62,7 +91,12 @@ def create_router(service: KnowledgeService) -> APIRouter:
 
     @router.post("/clear_history")
     def clear_history(req: SessionRequest):
-        return service.clear_history(session_id=req.session_id)
+        try:
+            return service.clear_history(session_id=req.session_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"清空会话历史失败：{e}")
 
     @router.post("/webhook")
     def webhook(

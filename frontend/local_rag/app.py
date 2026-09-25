@@ -1,3 +1,5 @@
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,6 +12,8 @@ from frontend.local_rag.api.routes import create_router
 from frontend.local_rag.config.settings import configure_observability, get_settings
 from frontend.local_rag.services.knowledge_service import KnowledgeService
 
+logger = logging.getLogger(__name__)
+
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIST = BASE_DIR.parent / "web" / "dist"
 LEGACY_INDEX = BASE_DIR / "index.html"
@@ -20,12 +24,30 @@ def create_app() -> FastAPI:
     configure_observability(settings)
     knowledge_service = KnowledgeService(settings)
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """启动时建表，关闭时释放连接池。
+
+        建表失败只告警不阻断启动：MySQL 还没 ready 时，应用仍应能起来，
+        由 depends_on(condition: service_healthy) 和后续请求重试来收敛。
+        """
+        try:
+            knowledge_service.database.create_tables()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("数据库建表失败（服务继续启动）: %s", exc)
+        try:
+            yield
+        finally:
+            # 数据库与 Redis 的连接池都在 close() 里统一释放
+            knowledge_service.close()
+
     app = FastAPI(
         title="知识库 RAG 多 Agent 问答平台",
         description="文档上传、多 Agent 调度、RAG/普通对话双模式、LangSmith 可观测",
         version="2.0",
         docs_url="/docs",
         redoc_url=None,
+        lifespan=lifespan,
     )
 
     app.add_middleware(

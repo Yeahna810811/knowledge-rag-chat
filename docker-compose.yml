@@ -1,10 +1,70 @@
 services:
+  mysql:
+    image: mysql:8.4
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_DATABASE: knowledge_rag
+      MYSQL_USER: rag_user
+      MYSQL_PASSWORD: rag_password
+      MYSQL_ROOT_PASSWORD: change_me_root_password
+    # 可选：本机 Python 进程（python run.py）想直连这个 MySQL 时再打开。
+    # 默认不映射端口——宿主机上往往已经装了 MySQL，抢 3306 会让 compose 起不来，
+    # 而且数据库没必要暴露到容器网络之外。真要直连就用 3307 避开冲突。
+    # ports:
+    #   - "127.0.0.1:3307:3306"
+    # 只有 docker compose down -v 才会删除这个 volume，
+    # 普通 down / up 后会话历史仍然存在。
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      # 注意 $$ 是转义：compose 不会在宿主机上展开它，而是原样传给容器内的 shell，
+      # 由容器自己的 MYSQL_ROOT_PASSWORD 环境变量展开。
+      # 写成单个 $ 会被 compose 按宿主机变量展开成空串，healthcheck 变成
+      # 「mysqladmin ping -p」——永远提示 Enter password 却返回 0，等于假阳性。
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # 不加持久化 volume，也没有 appendonly：Redis 里放的是缓存和限流计数，
+    # 全都是可重建的数据。丢了最坏结果是「缓存全 miss 一次」，
+    # 换来的是不需要为一份可丢弃的数据维护备份和恢复流程。
+    # 真要持久化（比如以后把会话也放进来）再加 redis_data volume 和 --appendonly yes。
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # 可选：本机进程想直连时再打开。
+    # ports:
+    #   - "127.0.0.1:6379:6379"
+    healthcheck:
+      # 用 CMD 而不是 CMD-SHELL：不需要 shell 展开，也就不会踩
+      # mysql 那个「$VAR 被宿主机展开成空串变假阳性」的坑。
+      # redis-cli ping 连不上时会以非 0 退出，是真检查。
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   rag-app:
     build: .
     ports:
       - "8000:8000"
     env_file:
       - frontend/local_rag/.env
+    environment:
+      # Docker 网络内部数据库 host 是服务名 mysql，不能写 localhost
+      DATABASE_URL: mysql+pymysql://rag_user:rag_password@mysql:3306/knowledge_rag?charset=utf8mb4
+      # 同理，Redis 的 host 是服务名 redis
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - rag_uploads:/app/frontend/local_rag/data/uploads
       - rag_faiss:/app/frontend/local_rag/data/faiss_index
@@ -13,3 +73,4 @@ services:
 volumes:
   rag_uploads:
   rag_faiss:
+  mysql_data:

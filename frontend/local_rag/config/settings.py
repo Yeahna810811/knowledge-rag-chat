@@ -71,6 +71,35 @@ class Settings(BaseSettings):
     faiss_index_dir: Path = PACKAGE_DIR / "data" / "faiss_index"
     bm25_index_dir: Path = PACKAGE_DIR / "data" / "bm25_index"
 
+    # ---- 数据库（会话持久化）----
+    # 生产 / Docker 用 MySQL：
+    #   mysql+pymysql://rag_user:rag_password@mysql:3306/knowledge_rag?charset=utf8mb4
+    # 缺省回落到 SQLite 文件，保证本地与 CI 不强制依赖 MySQL 服务。
+    # 密码一律走环境变量，不写死在代码里。
+    database_url: str = f"sqlite:///{PACKAGE_DIR / 'data' / 'rag_app.db'}"
+    database_echo: bool = False
+    # 仅对 MySQL 等非 SQLite 后端生效的连接池参数
+    database_pool_size: int = 5
+    database_max_overflow: int = 10
+
+    # ---- Redis（检索缓存 + 限流；不是数据源，挂掉只降级不中断）----
+    # Docker Compose 内部网络写服务名：redis://redis:6379/0
+    # 需要密码时直接带在 URL 里：redis://:password@host:6379/0
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    # Redis 超时刻意设短：缓存查不到大不了多检索一次，
+    # 不能让一次缓存查询把整个 /api/ask 拖住。
+    redis_socket_connect_timeout: float = 1.0
+    redis_socket_timeout: float = 1.0
+
+    # ---- Retrieval Cache ----
+    redis_cache_enabled: bool = True
+    redis_cache_ttl_seconds: int = 600
+
+    # ---- Rate Limit（/api/ask，按 session_id 计）----
+    rate_limit_enabled: bool = True
+    rate_limit_requests: int = 60
+    rate_limit_window_seconds: int = 60
+
     # ---- 服务 ----
     host: str = "0.0.0.0"
     port: int = 8000

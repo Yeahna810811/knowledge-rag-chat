@@ -16,10 +16,117 @@ jobs:
           python-version: "3.11"
       - name: Install backend deps
         run: pip install -r frontend/local_rag/requirements.txt
+      # 会话持久化测试默认跑临时 SQLite，不需要 MySQL 服务
+      - name: Database persistence tests
+        run: python tests/test_database.py
+      - name: Retrieval tests
+        run: |
+          python tests/test_retrieval.py
+          python tests/test_knowledge_retriever.py
+      # Redis 缓存与限流的单元用例（fakeredis，不需要 Redis 服务）
+      - name: Redis cache and rate limit tests
+        run: python tests/test_redis.py
       - name: Import app module
         run: python -c "from frontend.local_rag.app import create_app; create_app(); print('ok')"
         env:
           DASHSCOPE_API_KEY: dummy-for-import
+
+  # 用真实的 MySQL 8.4 跑一遍会话持久化测试。
+  # backend-smoke 用的是 SQLite，MySQL 特有的行为（utf8mb4、LONGTEXT、
+  # DATETIME 秒级精度导致的排序并列）只有在这里才覆盖得到。
+  # 这是独立 job：即便 MySQL 服务出问题，也不会影响上面的 SQLite 冒烟测试。
+  db-mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: knowledge_rag
+          MYSQL_USER: rag_user
+          MYSQL_PASSWORD: rag_password
+          MYSQL_ROOT_PASSWORD: change_me_root_password
+        ports:
+          - 3306:3306
+        # 密码故意写字面量：health-cmd 里的 $VAR 在 compose/CI 里会被宿主机
+        # 一侧展开成空串，探测命令退化成 `mysqladmin ping -p`，
+        # 只会打印 Enter password 却返回 0——假阳性。详见 README 4.4。
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pchange_me_root_password --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+          --health-start-period=40s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # 只装数据库相关的两个依赖，不必拉 torch / faiss，让这个 job 保持在几十秒
+      - name: Install DB deps
+        run: pip install "SQLAlchemy>=2.0,<3.0" "PyMySQL>=1.1,<2.0"
+      # 用应用账号 rag_user 探活，顺带验证建库/授权是否真的生效，
+      # 而不是只证明 mysqld 进程在跑。用 pymysql 而不是 mysqladmin，
+      # 免得依赖 runner 镜像里预装了什么。
+      - name: Wait for MySQL
+        run: |
+          python - <<'PY'
+          import sys, time
+          import pymysql
+
+          for i in range(60):
+              try:
+                  conn = pymysql.connect(
+                      host="127.0.0.1", port=3306, user="rag_user",
+                      password="rag_password", database="knowledge_rag",
+                      charset="utf8mb4", connect_timeout=3,
+                  )
+                  conn.close()
+                  print(f"mysql is up after {i * 2}s")
+                  sys.exit(0)
+              except Exception as exc:
+                  print(f"waiting for mysql: {exc}")
+                  time.sleep(2)
+          print("mysql did not become ready")
+          sys.exit(1)
+          PY
+      - name: Persistence tests against MySQL
+        env:
+          TEST_DATABASE_URL: mysql+pymysql://rag_user:rag_password@127.0.0.1:3306/knowledge_rag?charset=utf8mb4
+        run: python tests/test_database.py
+
+  # 用真实的 Redis 7 跑一遍缓存与限流。
+  # backend-smoke 里的同一批用例走 fakeredis，而 fakeredis 不支持 Lua(EVAL)，
+  # 所以「限流的 Lua 分支」「真实 TTL 过期」「跨客户端读缓存」只有在这里覆盖得到。
+  # 同样是独立 job：Redis 服务出问题不会影响其它流水线。
+  db-redis:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        # 用 CMD 形式（不是 CMD-SHELL），不涉及 shell 变量展开，不存在假阳性
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=3s
+          --health-retries=5
+          --health-start-period=10s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # 只装这几个轻量依赖，不拉 torch / faiss，让这个 job 保持在 1 分钟内。
+      # 服务级用例（需要 langchain）会自动 skip，Redis 本身的用例照常执行。
+      - name: Install Redis test deps
+        run: |
+          pip install "redis>=5,<7" fakeredis "SQLAlchemy>=2.0,<3.0" \
+            "PyMySQL>=1.1,<2.0" "pydantic-settings>=2.6.0"
+      - name: Redis integration tests
+        env:
+          TEST_REDIS_URL: redis://127.0.0.1:6379/0
+        run: python tests/test_redis.py
 
   frontend-build:
     runs-on: ubuntu-latest

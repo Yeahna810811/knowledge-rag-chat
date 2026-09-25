@@ -1,6 +1,9 @@
 # 密钥文件（绝对不能上传！）
 .env
 frontend/local_rag/.env
+# 所有环境变体（.env.local / .env.production ...），但保留模板 .env.example
+.env.*
+!.env.example
 
 # Python缓存
 __pycache__/
@@ -46,3 +49,7 @@ evaluation/extended_noise/
 
 # BM25 本地持久化索引
 frontend/local_rag/data/bm25_index/
+
+# SQLite fallback 会话库（无 MySQL 时的本地数据库文件）
+frontend/local_rag/data/*.db
+frontend/local_rag/data/*.db-journal
