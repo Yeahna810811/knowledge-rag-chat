@@ -567,9 +567,122 @@ TEST_REDIS_URL=redis://127.0.0.1:6379/0 python tests/test_redis.py
 
 ---
 
-## 6. 快速开始
+## 6. Async I/O & True SSE Streaming
 
-### 6.1 创建环境
+阶段 3 只解决两件事：**别让阻塞 I/O 堵死事件循环**，以及**让回答真的逐字吐出来**。
+
+### 6.1 先修掉一个真实的"假异步"
+
+`/api/upload` 原本长这样：`async def` 端点里直接调用同步的入库（解析 + 切分 + embedding）。
+这是异步代码里最典型也最隐蔽的坑——`async def` 并不会让里面的同步代码变异步，
+它只是承诺"我不阻塞事件循环"，而阻塞的入库把这个承诺打破了：
+一次上传期间，整个进程所有并发请求（包括正在流的 SSE 连接）全部卡死。
+
+```python
+# 修好后：显式的线程池卸载，async 的收益才真的拿得到
+result = await anyio.to_thread.run_sync(
+    lambda: service.ingest_upload(file.filename or "upload.bin", content)
+)
+```
+
+反过来，`/api/ask` **刻意保留同步 `def`**：FastAPI 会自动把同步端点丢进线程池，
+效果和手写 `to_thread` 一样，事件循环不会被堵住。把它改成 `async def`
+却不去卸载内部的阻塞调用，反而会把"自动卸载"变成"真阻塞"。
+
+### 6.2 事件协议
+
+`POST /api/ask/stream` 返回 `text/event-stream`，事件顺序固定：
+
+| event | 何时 | data |
+| --- | --- | --- |
+| `meta` | 立刻（握手后第一帧） | `question` / `session_id` / `mode` |
+| `sources` | 检索完成后、首个 token 之前（仅 rag） | `sources[]` |
+| `trace` | 生成开始前 | `agent_trace[]` |
+| `delta` | 每收到一块模型输出 | `text`（增量，非全文） |
+| `done` | 生成结束 | 完整 `answer` + `sources` + `history_turns` |
+| `error` | 任一步失败 | `message` |
+| `: ping` | 静默超过 `SSE_HEARTBEAT_SECONDS` | 无（注释帧，前端忽略） |
+
+`sources` 必须排在 `delta` 之前：用户要能边看答案边对照出处，
+而不是等答案说完才看到引用。
+
+出错时发 `error` **事件**而不是抛异常——响应头已经在 SSE 握手时发出去了，
+这时候抛异常只能中断连接，前端拿不到任何可读信息。
+
+### 6.3 请求示例
+
+```bash
+curl -N -X POST http://localhost:8000/api/ask/stream \
+  -H "Content-Type: application/json" \
+  -d '{"question":"报销流程是什么","session_id":"s1","mode":"rag"}'
+```
+
+```text
+event: meta
+data: {"question": "报销流程是什么", "session_id": "s1", "mode": "rag"}
+
+event: sources
+data: {"sources": [...], "mode": "rag"}
+
+event: delta
+data: {"text": "报销"}
+...
+event: done
+data: {"answer": "报销流程是…", "history_turns": 1, ...}
+```
+
+### 6.4 为什么不用浏览器的 EventSource
+
+`EventSource` 只能发 GET：既装不下长问题（URL 长度限制），
+也带不了 `AbortSignal`——而"生成一半点停止"恰恰是流式最刚需的交互。
+所以前端用 `fetch` + `ReadableStream` 自己按 `\n\n` 切帧，
+配合 `AbortController` 实现停止生成。
+
+### 6.5 心跳与断连
+
+- **心跳**是注释帧 `: ping`（冒号开头），前端天然忽略，不会污染事件流。
+  作用是穿透 nginx / 代理的空闲超时（很多默认 60s 就掐连接）。
+- 心跳实现上必须做**生产者/消费者分离**。直接写
+  `with anyio.fail_after(t): await gen.__anext__()` 会把超时取消砸进上游
+  生成器内部的 await（比如那次还没返回的 LLM 网络读），
+  **把生成器本身取消掉**——心跳反而成了杀死流的东西。
+  实测朴素实现下 3 个事件只能收到 1 个。
+- **客户端断开**（关页面 / AbortController / 代理超时）、`CancelledError`、
+  `GeneratorExit`、以及 LLM 中途报错，**都不写 MySQL**，只打一条结构化日志
+  （`reason=client_disconnected / stream_closed / generation_error`，带已丢弃
+  内容的长度与预览）。保留半截答案看着是"不浪费"，代价是它会被当作
+  assistant 上下文喂回下一轮，模型会学着说半截话——比丢掉这一轮糟得多。
+  真要保留半成品，应该加 `status=cancelled/failed/incomplete` 的数据模型，
+  而不是复用正常 `messages` 表。本阶段不扩表。
+- **MySQL 只在生成正常走完时写一次**，不是 per-token 写：
+  `done` 之前那唯一一次 `_append_turn`。
+- 那唯一一次写入用 `CancelScope(shield=True)` 兜住：最后一个 token 发出后，
+  客户端随时可能断开，取消会在下一个 `await` 点投递，不屏蔽就变成
+  "答完了却没存"——和上面"没答完却存了"是两个方向的同一种错。
+  注意 shield 只对 anyio 自己投的取消生效（Starlette 收到 `http.disconnect`
+  后 cancel 包住 `body_iterator` 的 task group 正是这条路径）；
+  裸 `asyncio.Task.cancel()` 由 asyncio 直接往协程里抛，会绕过 shield。
+
+### 6.6 限流
+
+`/api/ask/stream` 与 `/api/ask` 共用同一套按 `session_id` 计数的固定窗口限流。
+流式场景下 429 **必须在流开始之前**判定：响应头一旦发出去就改不了状态码了。
+被限掉的连接不会消耗任何 LLM 额度。
+
+### 6.7 流式链路的线程池边界
+
+| 环节 | 处理方式 | 原因 |
+| --- | --- | --- |
+| 检索（BM25 / FAISS / Redis 缓存） | `to_thread` | 同步代码，直接 await 会堵死循环 |
+| 读/写会话历史 | `to_thread` | 同步 SQLAlchemy |
+| LLM 生成 | 原生 `await` | 真正的网络 I/O，这才是异步的收益所在 |
+| 首次 runtime 初始化 | `to_thread` | 可能加载几百 MB 的 embedding 模型 |
+
+---
+
+## 7. 快速开始
+
+### 7.1 创建环境
 
 ```bash
 python3 -m venv .venv
@@ -584,7 +697,7 @@ pip install -r frontend/local_rag/requirements.txt
 
 ---
 
-### 6.2 配置环境变量
+### 7.2 配置环境变量
 
 复制：
 
@@ -618,7 +731,7 @@ QUERY_REWRITE_WEIGHT=0.3
 
 ---
 
-### 6.3 构建前端
+### 7.3 构建前端
 
 ```bash
 cd frontend/web
@@ -636,7 +749,7 @@ npm run dev
 
 ---
 
-### 6.4 启动项目
+### 7.4 启动项目
 
 项目根目录：
 
@@ -656,12 +769,13 @@ http://127.0.0.1:8000/docs
 
 ---
 
-## 7. API
+## 8. API
 
 | Method | Endpoint | 功能 |
 | --- | --- | --- |
 | POST | `/api/upload` | 上传文档并写入知识库 |
-| POST | `/api/ask` | RAG / Chat 问答 |
+| POST | `/api/ask` | RAG / Chat 问答（一次性返回） |
+| POST | `/api/ask/stream` | RAG / Chat 问答（SSE 流式，逐 token 下发） |
 | GET | `/api/status` | 查询知识库与检索状态 |
 | GET | `/api/history` | 查询指定会话历史 |
 | DELETE | `/api/reset` | 清空知识库 |
@@ -682,9 +796,9 @@ curl -X POST http://127.0.0.1:8000/api/ask \
 
 ---
 
-## 8. Benchmark
+## 9. Benchmark
 
-### 8.1 正式评测配置
+### 9.1 正式评测配置
 
 正式数据集：
 
@@ -714,7 +828,7 @@ chunk_overlap = 50
 
 ---
 
-## 9. Retrieval A/B 实验
+## 10. Retrieval A/B 实验
 
 正式运行命令：
 
@@ -758,7 +872,7 @@ BM25
 
 ---
 
-## 10. 统计显著性检验
+## 11. 统计显著性检验
 
 运行：
 
@@ -786,7 +900,7 @@ Sign Test p = 0.003
 
 ---
 
-## 11. End-to-End RAG Benchmark
+## 12. End-to-End RAG Benchmark
 
 最终使用：
 
@@ -841,7 +955,7 @@ Safe Refusal 仅统计：
 
 ---
 
-## 12. Latency
+## 13. Latency
 
 最终 BM25-RAG：
 
@@ -865,7 +979,7 @@ P95     = 5.33 s
 
 ---
 
-## 13. 为什么有两组 Retrieval 数字
+## 14. 为什么有两组 Retrieval 数字
 
 Retrieval A/B：
 
@@ -895,7 +1009,7 @@ evaluate_rag.py
 
 ---
 
-## 14. 测试
+## 15. 测试
 
 Retrieval 算法测试：
 
@@ -919,6 +1033,12 @@ Redis 缓存与限流测试：
 
 ```bash
 python tests/test_redis.py
+```
+
+Async I/O + SSE 测试（帧格式 / 服务端到端 / HTTP 字节级）：
+
+```bash
+python tests/test_async_sse.py
 ```
 
 当前已覆盖：
@@ -949,6 +1069,19 @@ upload / reset 后版本递增（失败不 bump）
 Redis 故障后 RAG / Chat / MySQL 均正常
 Rate Limit 放行 / 429 / 窗口滚动 / 会话隔离 / fail-open
 Lua 瞬时故障后自动恢复（不被永久禁用）
+SSE 帧边界 / data 单行 / 中文不转义 / 心跳是注释帧
+事件顺序 meta → sources → trace → delta* → done
+delta 拼接等于 done.answer
+chat 模式不下发 sources
+上游异常转成 error 事件（不中断连接）
+正常完成：恰好写 1 次库、恰好 1 条完整 turn（无 per-token 写）
+abort（CancelledError）/ GeneratorExit / 中途取消 / LLM streaming error
+  均「不写库」，历史中不残留半截 assistant answer
+生成结束后立刻取消：最终写入受 shield 保护仍然成功
+Redis 故障下流式 fail-open
+流式端点限流 429 + Retry-After
+并发两路流不串台
+流式期间事件循环未被阻塞
 ```
 
 此前测试结果：
@@ -960,11 +1093,12 @@ tests/test_database.py              51 passed  （SQLite 默认）
                                     56 passed  （连真实 MySQL 8.4）
 tests/test_redis.py                 71 passed  （fakeredis 默认）
                                     80 passed  （连真实 Redis 7）
+tests/test_async_sse.py             82 passed  （httpx + ASGITransport）
 ```
 
 ---
 
-## 15. Docker
+## 16. Docker
 
 ```bash
 docker compose up --build
@@ -972,7 +1106,7 @@ docker compose up --build
 
 ---
 
-## 16. 项目结构
+## 17. 项目结构
 
 ```text
 knowledge-rag-chat/
@@ -989,6 +1123,8 @@ knowledge-rag-chat/
 │   │
 │   └── local_rag/
 │       ├── api/
+│       │   ├── routes.py
+│       │   └── sse.py              # SSE 帧构造 / 心跳（零依赖手写）
 │       ├── cache/
 │       │   └── redis_client.py
 │       ├── config/
@@ -1009,7 +1145,8 @@ knowledge-rag-chat/
 │   ├── test_retrieval.py
 │   ├── test_knowledge_retriever.py
 │   ├── test_database.py
-│   └── test_redis.py
+│   ├── test_redis.py
+│   └── test_async_sse.py
 │
 └── evaluation/
     ├── EVALUATION_AUDIT.md
@@ -1030,7 +1167,7 @@ knowledge-rag-chat/
 
 ---
 
-## 17. 正式结果
+## 18. 正式结果
 
 Retrieval：
 
@@ -1065,7 +1202,7 @@ evaluation/EVALUATION_AUDIT.md
 
 ---
 
-## 18. 实验结论与边界
+## 19. 实验结论与边界
 
 当前实验表明：
 

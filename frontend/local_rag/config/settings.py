@@ -95,10 +95,17 @@ class Settings(BaseSettings):
     redis_cache_enabled: bool = True
     redis_cache_ttl_seconds: int = 600
 
-    # ---- Rate Limit（/api/ask，按 session_id 计）----
+    # ---- Rate Limit（/api/ask 与 /api/ask/stream，按 session_id 计）----
     rate_limit_enabled: bool = True
     rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
+
+    # ---- SSE 流式 ----
+    # 等待下一个事件的最长时间：超过就发一个心跳注释帧。
+    # 作用是穿透代理 / nginx 的空闲超时（很多默认 60s 掐连接），
+    # 并让前端能分清"服务端还活着但模型还没出字"和"连接真断了"。
+    # 设 0 表示完全不发心跳（压测或本地直连时可以关掉省几字节）。
+    sse_heartbeat_seconds: float = 15.0
 
     # ---- 服务 ----
     host: str = "0.0.0.0"

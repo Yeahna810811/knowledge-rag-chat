@@ -26,6 +26,10 @@ jobs:
       # Redis 缓存与限流的单元用例（fakeredis，不需要 Redis 服务）
       - name: Redis cache and rate limit tests
         run: python tests/test_redis.py
+      # Async I/O + SSE：帧格式与服务端到端（httpx + ASGITransport，不起真服务）。
+      # 真实 LLM 那组默认 skip（要设 STREAM_REAL_LLM=1 才跑，避免 CI 烧额度）。
+      - name: Async SSE tests
+        run: python tests/test_async_sse.py
       - name: Import app module
         run: python -c "from frontend.local_rag.app import create_app; create_app(); print('ok')"
         env:

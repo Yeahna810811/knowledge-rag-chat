@@ -418,6 +418,22 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .md a:hover { text-decoration: underline; }
 .md strong { font-weight: 650; }
 
+/* 流式输出：纯文本 + 光标，等 done 之后再切成 markdown 渲染 */
+.streaming-text { white-space: pre-wrap; word-break: break-word; }
+.streaming-text .caret {
+  display: inline-block;
+  width: 7px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: caret-blink 1s steps(2, start) infinite;
+}
+@keyframes caret-blink {
+  to { visibility: hidden; }
+}
+
 /* 来源 */
 .sources { margin-top: 9px; font-size: 12px; color: var(--muted); }
 .sources details { font-size: 12px; }
