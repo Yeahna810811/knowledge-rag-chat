@@ -680,9 +680,237 @@ data: {"answer": "报销流程是…", "history_turns": 1, ...}
 
 ---
 
-## 7. 快速开始
+## 7. Reliability & Observability
 
-### 7.1 创建环境
+阶段 4 不增加任何业务能力，只解决一件事：**出故障时能说清发生了什么**。
+能回答"是哪一类错、等了多久、重试了几次、这次请求是哪一次"。
+
+### 7.1 Request ID
+
+每次 HTTP 请求都带一个 `request_id`：
+
+- 客户端传了合法的 `X-Request-ID`（`[A-Za-z0-9._:-]{1,64}`）就复用，便于跨服务串联
+- 否则服务端生成 UUID hex
+- 不合法时**静默替换**而不是报 400——请求头是客户端可控输入，
+  为它的格式问题惩罚业务请求不划算；而且这个值会进日志和 SSE 帧，
+  放行任意字符串等于给别人一个日志注入的入口
+- 响应头 `X-Request-ID` 一定会返回；SSE 的 `meta` 事件里也带一份
+
+传播用 `ContextVar` 而不是全局变量或显式层层传参：
+
+- 全局变量：并发请求之间必然串号——这是最糟的一类 bug，日志看着正常，
+  但 A 请求的耗时被记到 B 头上
+- 显式传参：靠"每个函数都记得往下传"，漏一个就断链
+- ContextVar：一次绑定，当前任务（含其 await 链）内都能读到，并发天然隔离
+
+两个已实测过的边界：
+
+1. `anyio.to_thread.run_sync` 会复制当前 context，所以卸载到线程池的
+   检索 / 读写库同样拿得到 `request_id`
+2. 异步生成器（`astream_ask`）是在路由返回之后才被迭代的，路由里的绑定
+   已经出栈了。所以 **service 层必须在生成器内部再绑一次**，并在 `finally`
+   里复位——否则 ContextVar 会泄漏到下一个请求
+
+### 7.2 结构化日志
+
+只依赖标准库 `logging`，格式是单行 `k=v`：
+
+```text
+event=llm_complete request_id=9f2c… session_id=s1 mode=rag status=ok generation_ms=1820.4 answer_len=137
+```
+
+选 `k=v` 而不是 JSON 的理由很实际：出故障时人是拿着终端在 grep，
+`grep request_id=abc` 比 `jq` 快得多。前四个字段（`event` / `request_id` /
+`session_id` / `mode`）永远固定在前，扫日志可以靠肌肉记忆。
+上下文字段由 `log_event` 自动补齐，调用方不手抄——手抄就容易抄成上一个请求的。
+
+事件清单：
+
+| event | 何时 | 默认级别 |
+| --- | --- | --- |
+| `request_start` | 请求进入业务层 | INFO |
+| `retrieval_complete` | 检索完成（含 `cache_hit` / `retrieval_ms`） | INFO |
+| `llm_start` | 调用 LLM 前 | INFO |
+| `llm_first_token` | 流式首个真实 token | INFO |
+| `llm_complete` | 生成结束或失败 | INFO / WARNING |
+| `llm_retry` | 发生一次重试 | WARNING |
+| `persistence_complete` / `persistence_failed` | 落库结果 | INFO / WARNING |
+| `request_complete` / `request_failed` | 请求结束 | INFO / WARNING |
+| `stream_cancelled` | 客户端断开 | INFO |
+| `redis_unavailable` | Redis 故障降级 | WARNING |
+| `rate_limited` | 自己的限流命中 | WARNING |
+
+字段纪律：**不写完整 question / answer / 文档内容**，只写 `question_len` /
+`answer_len`。原因不是洁癖——日志会被收集、留存、被第三个人看到；而完整内容
+对排障几乎没有帮助，"这次请求 5123ms"有用，"这次请求的内容是……"没用。
+异常消息统一过 `safe_message()`：脱敏 `sk-` / `Bearer` / key-value 形式的凭据、
+压掉控制字符（防日志注入）、截断到 200 字符。
+
+### 7.3 错误分类
+
+上游 SDK 抛出来的异常是个大杂烩，直接往上抛调用方只能 `except Exception`，
+然后要么一股脑重试（把 401 也重试了），要么一股脑不重试（把网络抖动也放过了）。
+`observability/errors.py` 只回答三个问题：是什么类型、该不该重试、给客户端什么状态码。
+
+| error_type | 触发 | 可重试 | HTTP |
+| --- | --- | --- | --- |
+| `LLM_TIMEOUT` | 超时 | ✅ | 504 |
+| `LLM_RATE_LIMITED` | 上游 429 | ✅ | 502 |
+| `LLM_UPSTREAM_ERROR` | 上游 5xx / 连接重置 | ✅ | 502 |
+| `LLM_AUTH_ERROR` | 401 / 403 | ❌ | 502 |
+| `VALIDATION_ERROR` | 400 / 422 等参数问题 | ❌ | 400 |
+| `RETRIEVAL_ERROR` | 检索失败 | ❌ | 500 |
+| `DATABASE_ERROR` | 数据库异常 | ❌ | 500 |
+| `REDIS_UNAVAILABLE` | Redis 故障 | ❌ | **不映射成 5xx** |
+| `RATE_LIMITED` | 自己的限流 | ❌ | 429 |
+| `STREAM_CANCELLED` | 取消 / 断开 | ❌ | 499 |
+| `INTERNAL_ERROR` | 兜底 | ❌ | 500 |
+
+判定顺序从"最确定"到"最模糊"：已分类 → 取消 → 状态码 → 异常类名 → 异常文本 → 兜底。
+文本匹配放最后是因为它最不可靠，但也是唯一能兜住"第三方库抛了个裸
+`RuntimeError('connection reset')`"的手段。
+
+兜底分支刻意**保留**脱敏截断后的原始信息，而不是清空成一句"服务内部错误"：
+把消息清空是把排障成本和安全性一起丢掉了。
+
+### 7.4 Retry 策略
+
+`LLM_RETRY_MAX_ATTEMPTS` 是**总尝试次数**（首次 + 重试），3 表示最多调 3 次 LLM，
+写成"重试 3 次"很容易被理解成总共 4 次。退避是指数的但封顶：
+不封顶的话第 10 次重试要等几分钟，用户早把页面关了。
+
+**先关掉 SDK 内建重试。** openai SDK 默认 `max_retries=2`，它在 transport 层
+静默重发：不打日志、不带 `request_id`，流式场景下还会把整条流重跑一遍。
+留着它就是 `SDK retry × 应用层 retry`——失败时根本数不清到底发了几遍。
+所以 `LLM_SDK_MAX_RETRIES=0`，重试逻辑全部收敛到本项目自己的
+`run_with_retry` / `guarded_astream`。
+
+重试只有一条判据：**再试一次有可能成功**。所以超时、连接重置、上游限流、
+上游 5xx 重试；鉴权失败、参数错误、业务逻辑错误、数据库约束错误、
+用户主动取消一律不重试。
+
+取消必须原样向上抛——这是最容易写错的一条：如果为了重试而 `except Exception`
+一把抓，用户按了停止也会被当成"失败"去重试，abort 语义整个失效。
+
+### 7.5 流式：first-token 是重试的分界线
+
+这是阶段 4 最重要的约束。
+
+```text
+before first token 失败  → 可以重试（用户还没收到任何内容，重试是透明的）
+after  first token 失败  → 绝不重试，发 error 事件，不保存半截答案
+```
+
+原因很直观：第一次已经吐给用户"你好，我是…"，第二次重试又从头生成一遍，
+用户看到的就是两遍开头。所以 `guarded_astream` 里的 `sent_any` 一旦为真，
+任何错误都直接向上抛。
+
+实现上 `sent_any = True` 必须**在 yield 之前**置位：yield 之后控制权就交给下游了，
+等下游抛回来再置位已经晚了。
+
+### 7.6 Timeout
+
+三段超时，全部走 Settings，不硬编码：
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `LLM_REQUEST_TIMEOUT_SECONDS` | 60 | 非流式一次调用的总超时 |
+| `LLM_FIRST_TOKEN_TIMEOUT_SECONDS` | 30 | 流式：发起请求到首个真实 token |
+| `LLM_STREAM_IDLE_TIMEOUT_SECONDS` | 60 | 流式：两个 token 之间的最大静默 |
+
+首 token 超时和空闲超时分开是因为"排队 40s 才开始出字"和"出了两个字之后卡住"
+是两种完全不同的故障。流式**不用总时长**卡——长回答天然耗时不可预测，
+用总时长会把正常长回答误杀。
+
+实现上复用阶段 3 的生产者/消费者分离：
+
+```python
+# 错误做法：取消会砸进生成器内部的 await，把生成器本身取消掉
+with anyio.fail_after(t):
+    item = await gen.__anext__()
+
+# 正确做法：上游跑在独立任务里往内存流送，超时只作用在"等内存流"这一步
+async with anyio.create_task_group() as tg:
+    tg.start_soon(producer)
+    item = await receive_stream.receive()   # 超时落在这里
+```
+
+用 `fail_after` 直接包 `__anext__()` 是阶段 3 做心跳时踩过的坑，不重新引入。
+每次尝试都开一个 task group：异常从 `async with` 抛出去时 `__aexit__` 会
+取消并等待子任务，不会留 dangling task 继续烧额度。
+`gen.aclose()` 放 shield 里——取消已生效时不屏蔽的话清理动作自己就会被取消。
+
+### 7.7 数据库写纪律
+
+`append conversation turn` **不做自动重试**。
+
+数据库写可能已经成功、只是客户端不知道结果，盲目重跑会产生重复 message。
+所以保持：正常完整 generation → 单次 append；append 失败 → 记
+`DATABASE_ERROR` + `persistence_failed` 日志，然后降级（前端仍拿到完整回答）。
+
+不因为写库失败重新调用 LLM，也不因为写库失败重新生成回答。
+
+### 7.8 Redis 仍然 fail-open
+
+Redis 是加速器不是数据源。故障时继续记 `redis_unavailable` +
+人话 warning，但**绝不因为缓存挂了让 RAG / Chat 请求失败**——
+不为了统一错误处理把它改成 HTTP 500。
+
+### 7.9 Timing 指标
+
+统一用 `time.perf_counter()`，不用 wall clock（会被 NTP 调整、能被人为改，
+算差值可能得到负数或跳变几十秒）。
+
+| 指标 | 定义 |
+| --- | --- |
+| `ttft_ms` | 请求开始 → **第一个真实 LLM token 被发送**（不是 meta / heartbeat / trace） |
+| `generation_ms` | LLM 调用开始 → 生成结束 |
+| `retrieval_ms` | 检索耗时（chat 模式为 null / 省略） |
+| `cache_ms` | 缓存查询耗时 |
+| `total_ms` | 请求开始 → 请求结束 |
+
+`ttft_ms` 只在 service 层记一次。两层各记一次的话同一条流会出现两个
+`ttft_ms` 且数值不同，排障时反而多一个"到底以哪个为准"的疑问。
+
+### 7.10 HTTP 与 SSE 的错误语义
+
+响应头**尚未发出**时，可以按分类给状态码：429（自己的限流）/ 504（超时）/
+502（上游故障）/ 400（参数）/ 500（其余）。错误响应体形如：
+
+```json
+{"request_id": "9f2c…", "error_type": "LLM_TIMEOUT", "message": "上游调用超时"}
+```
+
+但 SSE 一旦 `text/event-stream` 开始，状态码已经改不了了。此时发 `error` 事件：
+
+```text
+event: error
+data: {"request_id": "9f2c…", "error_type": "LLM_TIMEOUT", "message": "上游调用超时"}
+```
+
+`message` 一律过 `safe_message()`，不含 API key、完整堆栈、provider 原始敏感信息。
+服务端日志保留 `cause` 供深挖，但不进响应体。
+
+### 7.11 环境变量
+
+```bash
+LLM_REQUEST_TIMEOUT_SECONDS=60
+LLM_FIRST_TOKEN_TIMEOUT_SECONDS=30
+LLM_STREAM_IDLE_TIMEOUT_SECONDS=60
+
+LLM_RETRY_ENABLED=true
+LLM_RETRY_MAX_ATTEMPTS=3        # 总尝试次数
+LLM_RETRY_BASE_DELAY_SECONDS=0.5
+LLM_RETRY_MAX_DELAY_SECONDS=8
+
+LLM_SDK_MAX_RETRIES=0           # 必须保持 0，避免双层 retry
+STRUCTURED_LOGGING_ENABLED=true
+LOG_LEVEL=INFO
+```
+
+## 8. 快速开始
+
+### 8.1 创建环境
 
 ```bash
 python3 -m venv .venv
@@ -697,7 +925,7 @@ pip install -r frontend/local_rag/requirements.txt
 
 ---
 
-### 7.2 配置环境变量
+### 8.2 配置环境变量
 
 复制：
 
@@ -731,7 +959,7 @@ QUERY_REWRITE_WEIGHT=0.3
 
 ---
 
-### 7.3 构建前端
+### 8.3 构建前端
 
 ```bash
 cd frontend/web
@@ -749,7 +977,7 @@ npm run dev
 
 ---
 
-### 7.4 启动项目
+### 8.4 启动项目
 
 项目根目录：
 
@@ -769,7 +997,7 @@ http://127.0.0.1:8000/docs
 
 ---
 
-## 8. API
+## 9. API
 
 | Method | Endpoint | 功能 |
 | --- | --- | --- |
@@ -782,11 +1010,16 @@ http://127.0.0.1:8000/docs
 | POST | `/api/clear_history` | 清空指定会话 |
 | POST | `/api/webhook` | 自动化 / CI Webhook |
 
+问答与流式接口都支持可选的 `X-Request-ID` 请求头，响应头 `X-Request-ID`
+返回实际使用的 ID（流式还会在 `meta` 事件里带一份）。传了合法值就复用，
+不传或格式不合法由服务端生成。
+
 问答示例：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/ask \
   -H "Content-Type: application/json" \
+  -H "X-Request-ID: demo-req-001" \
   -d '{
     "question":"这份文档主要讲了什么？",
     "session_id":"demo",
@@ -794,11 +1027,17 @@ curl -X POST http://127.0.0.1:8000/api/ask \
   }'
 ```
 
+出错时（响应头尚未发出的场景）返回对应的状态码与分类后的错误体：
+
+```json
+{"request_id": "demo-req-001", "error_type": "LLM_TIMEOUT", "message": "上游调用超时"}
+```
+
 ---
 
-## 9. Benchmark
+## 10. Benchmark
 
-### 9.1 正式评测配置
+### 10.1 正式评测配置
 
 正式数据集：
 
@@ -828,7 +1067,7 @@ chunk_overlap = 50
 
 ---
 
-## 10. Retrieval A/B 实验
+## 11. Retrieval A/B 实验
 
 正式运行命令：
 
@@ -872,7 +1111,7 @@ BM25
 
 ---
 
-## 11. 统计显著性检验
+## 12. 统计显著性检验
 
 运行：
 
@@ -900,7 +1139,7 @@ Sign Test p = 0.003
 
 ---
 
-## 12. End-to-End RAG Benchmark
+## 13. End-to-End RAG Benchmark
 
 最终使用：
 
@@ -955,7 +1194,7 @@ Safe Refusal 仅统计：
 
 ---
 
-## 13. Latency
+## 14. Latency
 
 最终 BM25-RAG：
 
@@ -979,7 +1218,7 @@ P95     = 5.33 s
 
 ---
 
-## 14. 为什么有两组 Retrieval 数字
+## 15. 为什么有两组 Retrieval 数字
 
 Retrieval A/B：
 
@@ -1009,7 +1248,7 @@ evaluate_rag.py
 
 ---
 
-## 15. 测试
+## 16. 测试
 
 Retrieval 算法测试：
 
@@ -1039,6 +1278,12 @@ Async I/O + SSE 测试（帧格式 / 服务端到端 / HTTP 字节级）：
 
 ```bash
 python tests/test_async_sse.py
+```
+
+可靠性与可观测性测试（request_id / 重试 / 超时 / 错误分类 / 结构化日志）：
+
+```bash
+python tests/test_reliability_observability.py
 ```
 
 当前已覆盖：
@@ -1082,6 +1327,16 @@ Redis 故障下流式 fail-open
 流式端点限流 429 + Retry-After
 并发两路流不串台
 流式期间事件循环未被阻塞
+request_id 自动生成 / 响应头 / SSE meta / 复用客户端传入值
+并发请求的 request_id 与上下文互不串台
+结构化日志含 request_id，且不出现 API key / 完整 question / 完整 answer
+非流式：瞬时错误重试后成功、达上限停止、鉴权与参数错误不重试、退避次数正确
+流式：首 token 前瞬时错误重试成功、首 token 后失败不重试、error 只发一次
+首 token 超时 / 流式空闲超时 / 非流式超时，超时后不留半截答案、无 dangling task
+数据库写失败不重新调用 LLM、不重复写
+Redis 故障仍 fail-open 且有 warning 日志、不变成 500
+自己限流 429 + Retry-After，且不进入 LLM generation
+total_ms / ttft_ms / generation_ms / retrieval_ms 定义正确
 ```
 
 此前测试结果：
@@ -1094,11 +1349,12 @@ tests/test_database.py              51 passed  （SQLite 默认）
 tests/test_redis.py                 71 passed  （fakeredis 默认）
                                     80 passed  （连真实 Redis 7）
 tests/test_async_sse.py             82 passed  （httpx + ASGITransport）
+tests/test_reliability_observability.py  148 passed  （全部 deterministic stub）
 ```
 
 ---
 
-## 16. Docker
+## 17. Docker
 
 ```bash
 docker compose up --build
@@ -1106,7 +1362,7 @@ docker compose up --build
 
 ---
 
-## 17. 项目结构
+## 18. 项目结构
 
 ```text
 knowledge-rag-chat/
@@ -1134,6 +1390,12 @@ knowledge-rag-chat/
 │       ├── db/
 │       │   ├── database.py
 │       │   └── models.py
+│       ├── observability/                 # Stage 4
+│       │   ├── request_context.py   # request_id 与上下文传播（ContextVar）
+│       │   ├── errors.py            # 错误分类 / 是否可重试 / 状态码 / 脱敏
+│       │   ├── structured_log.py    # 结构化事件日志与计时
+│       │   ├── retry.py             # 指数退避重试（非流式）
+│       │   └── stream_guard.py      # 流式超时 + 首 token 前重试 + 任务清理
 │       ├── services/
 │       │   ├── knowledge_service.py
 │       │   ├── conversation_store.py
@@ -1146,7 +1408,8 @@ knowledge-rag-chat/
 │   ├── test_knowledge_retriever.py
 │   ├── test_database.py
 │   ├── test_redis.py
-│   └── test_async_sse.py
+│   ├── test_async_sse.py
+│   └── test_reliability_observability.py
 │
 └── evaluation/
     ├── EVALUATION_AUDIT.md
@@ -1167,7 +1430,7 @@ knowledge-rag-chat/
 
 ---
 
-## 18. 正式结果
+## 19. 正式结果
 
 Retrieval：
 
@@ -1202,7 +1465,7 @@ evaluation/EVALUATION_AUDIT.md
 
 ---
 
-## 19. 实验结论与边界
+## 20. 实验结论与边界
 
 当前实验表明：
 

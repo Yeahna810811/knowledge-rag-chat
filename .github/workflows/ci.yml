@@ -30,6 +30,10 @@ jobs:
       # 真实 LLM 那组默认 skip（要设 STREAM_REAL_LLM=1 才跑，避免 CI 烧额度）。
       - name: Async SSE tests
         run: python tests/test_async_sse.py
+      # 可靠性与可观测性：request_id / 重试 / 超时 / 错误分类 / 结构化日志。
+      # 重试的 sleep 全部注入，用例不依赖真实时间，也不需要真实 LLM。
+      - name: Reliability and observability tests
+        run: python tests/test_reliability_observability.py
       - name: Import app module
         run: python -c "from frontend.local_rag.app import create_app; create_app(); print('ok')"
         env:

@@ -10,6 +10,7 @@ import uvicorn
 
 from frontend.local_rag.api.routes import create_router
 from frontend.local_rag.config.settings import configure_observability, get_settings
+from frontend.local_rag.observability.structured_log import configure_logging
 from frontend.local_rag.services.knowledge_service import KnowledgeService
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,10 @@ LEGACY_INDEX = BASE_DIR / "index.html"
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_observability(settings)
+    if settings.structured_logging_enabled:
+        # 幂等：uvicorn 自己也会配 logging，重复 addHandler 会让同一条
+        # 事件打两遍（看起来像重试了两次）。
+        configure_logging(getattr(logging, str(settings.log_level).upper(), logging.INFO))
     knowledge_service = KnowledgeService(settings)
 
     @asynccontextmanager

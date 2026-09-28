@@ -6,11 +6,25 @@ import time
 from typing import Any, Literal, Optional
 
 import anyio
-from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, Query, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from frontend.local_rag.api.sse import SSE_HEADERS, SSE_MEDIA_TYPE, sse_frames
+from frontend.local_rag.observability.errors import (
+    ClassifiedError,
+    ErrorType,
+    classify_exception,
+)
+from frontend.local_rag.observability.request_context import (
+    bind_context,
+    resolve_request_id,
+    reset_context,
+)
+from frontend.local_rag.observability.structured_log import (
+    EV_RATE_LIMITED,
+    log_event,
+)
 from frontend.local_rag.services.knowledge_service import KnowledgeService
 from frontend.local_rag.services.rate_limiter import RateLimiter
 
@@ -45,6 +59,26 @@ def create_router(
     router = APIRouter()
     limiter = rate_limiter if rate_limiter is not None else service.rate_limiter
 
+    def _deny(session_id: str, verdict: Any, streaming: bool) -> HTTPException:
+        """统一的限流拒绝：日志 + 429 + Retry-After。
+
+        这是我们自己的限流，不是上游限流，所以错误类型固定 RATE_LIMITED，
+        状态码固定 429——不要和 LLM_RATE_LIMITED（502）混为一谈，
+        前者是"你太快"，后者是"上游忙"。
+        """
+        log_event(
+            EV_RATE_LIMITED,
+            status="rejected",
+            error_type=ErrorType.RATE_LIMITED.value,
+            retry_after=verdict.retry_after,
+            endpoint="/api/ask/stream" if streaming else "/api/ask",
+        )
+        return HTTPException(
+            status_code=429,
+            detail=verdict.as_detail(),
+            headers={"Retry-After": str(verdict.retry_after)},
+        )
+
     @router.post("/upload")
     async def upload(file: UploadFile = File(...)):
         try:
@@ -63,7 +97,14 @@ def create_router(
             raise HTTPException(status_code=500, detail=f"文档处理失败：{e}")
 
     @router.post("/ask")
-    def ask(req: AskRequest):
+    def ask(
+        req: AskRequest,
+        # 给个默认值是为了让"不经过 ASGI 直接调 endpoint"的用法也能跑
+        # （老测试里有这种调用）。FastAPI 对 Response 类型是特判注入的，
+        # 有默认值它照样会注入真实 Response。
+        response: Response = None,  # type: ignore[assignment]
+        x_request_id: Optional[str] = Header(default=None),
+    ):
         # 这里刻意保留同步 def：FastAPI 会把同步端点自动丢进线程池执行，
         # 效果和手写 to_thread 一样，事件循环不会被堵住。
         # 反过来如果写成 `async def` 却在里面直接调阻塞的 service.ask()，
@@ -72,23 +113,47 @@ def create_router(
         #
         # 限流放在业务逻辑之前：被限掉的请求不该消耗 LLM 额度。
         # Redis 挂掉时 check() 是 fail-open，所以这里不会因 Redis 故障拒绝请求。
-        verdict = limiter.check(req.session_id)
-        if not verdict.allowed:
-            raise HTTPException(
-                status_code=429,
-                detail=verdict.as_detail(),
-                headers={"Retry-After": str(verdict.retry_after)},
-            )
+        request_id = resolve_request_id(x_request_id)
+        if response is not None:
+            response.headers["X-Request-ID"] = request_id
+        tokens = bind_context(request_id, req.session_id, req.mode)
 
         try:
-            return service.ask(req.question, session_id=req.session_id, mode=req.mode)
+            verdict = limiter.check(req.session_id)
+            if not verdict.allowed:
+                raise _deny(req.session_id, verdict, streaming=False)
+
+            return service.ask(
+                req.question,
+                session_id=req.session_id,
+                mode=req.mode,
+                request_id=request_id,
+            )
+        except HTTPException:
+            raise
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except ClassifiedError as exc:
+            # 响应头还没发出去，可以按错误分类给状态码：
+            # 超时 504 / 上游故障 502 / 其余按映射表。
+            raise HTTPException(
+                status_code=exc.http_status,
+                detail={"request_id": request_id, **exc.as_payload()},
+            )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"问答失败：{e}")
+            classified = classify_exception(e)
+            raise HTTPException(
+                status_code=classified.http_status,
+                detail={"request_id": request_id, **classified.as_payload()},
+            )
+        finally:
+            reset_context(tokens)
 
     @router.post("/ask/stream")
-    async def ask_stream(req: AskRequest):
+    async def ask_stream(
+        req: AskRequest,
+        x_request_id: Optional[str] = Header(default=None),
+    ):
         """流式问答：以 SSE 逐块下发 token。
 
         注意"落库"这个词在这里是有条件的：只有生成正常走完，才会把
@@ -102,23 +167,26 @@ def create_router(
         """
         # 限流同样放在业务逻辑之前：被限掉的请求不该消耗 LLM 额度。
         # Redis 挂掉时 check() 是 fail-open，不会因 Redis 故障拒绝请求。
+        request_id = resolve_request_id(x_request_id)
         verdict = await anyio.to_thread.run_sync(lambda: limiter.check(req.session_id))
         if not verdict.allowed:
-            raise HTTPException(
-                status_code=429,
-                detail=verdict.as_detail(),
-                headers={"Retry-After": str(verdict.retry_after)},
-            )
+            raise _deny(req.session_id, verdict, streaming=True)
 
         events = service.astream_ask(
-            req.question, session_id=req.session_id, mode=req.mode
+            req.question,
+            session_id=req.session_id,
+            mode=req.mode,
+            request_id=request_id,
         )
+        # request_id 同时放进响应头和 SSE 的 meta 事件：
+        # 前者给抓包 / 网关日志用，后者给前端展示"把这串 ID 发给客服"。
+        headers = {**SSE_HEADERS, "X-Request-ID": request_id}
         return StreamingResponse(
             sse_frames(
                 events, heartbeat_seconds=service.settings.sse_heartbeat_seconds
             ),
             media_type=SSE_MEDIA_TYPE,
-            headers=SSE_HEADERS,
+            headers=headers,
         )
 
     @router.get("/status")

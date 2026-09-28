@@ -12,6 +12,20 @@ from frontend.local_rag.core.agents.generation_agent import GenerationAgent
 from frontend.local_rag.core.agents.retrieval_agent import RetrievalAgent
 from frontend.local_rag.core.document_processor import DocumentProcessor
 from frontend.local_rag.core.retrieval.protocol import RetrievalStore
+from frontend.local_rag.observability.errors import (
+    ClassifiedError,
+    ErrorType,
+    safe_message,
+)
+from frontend.local_rag.observability.structured_log import (
+    EV_RETRIEVAL_COMPLETE,
+    Timer,
+    log_event,
+)
+
+# 检索阶段的错误单独归类：它和 LLM 错误的处理方式不同
+# （LLM 错误可重试，检索错误不重试——检索是本地计算）。
+RETRIEVAL_ERROR_TYPE = ErrorType.RETRIEVAL_ERROR
 
 
 class AgentOrchestrator:
@@ -61,11 +75,34 @@ class AgentOrchestrator:
 
         agent_trace: list[str] = []
         sources: list[dict] = []
+        retrieval_ms: float | None = None
 
         if mode == "rag":
-            retrieval = self.retrieval_agent.run(question=question)
+            retrieval_timer = Timer()
+            sources = []
+            try:
+                retrieval = self.retrieval_agent.run(question=question)
+            except Exception as exc:  # noqa: BLE001
+                # 检索是本地计算（BM25 / FAISS），失败通常是索引损坏 / 目录不可读
+                # 这类确定性故障——重试只会再算一遍同样的错误，所以不重试。
+                log_event(
+                    EV_RETRIEVAL_COMPLETE,
+                    status="failed",
+                    error_type=RETRIEVAL_ERROR_TYPE.value,
+                    retrieval_ms=retrieval_timer.elapsed_ms_rounded(),
+                )
+                raise ClassifiedError(
+                    ErrorType.RETRIEVAL_ERROR, f"检索失败：{safe_message(exc)}", cause=exc
+                ) from exc
+            retrieval_ms = retrieval_timer.elapsed_ms_rounded()
             agent_trace.append(retrieval.agent)
             sources = retrieval.data.get("sources", [])
+            log_event(
+                EV_RETRIEVAL_COMPLETE,
+                status="ok",
+                retrieval_ms=retrieval_ms,
+                sources=len(sources),
+            )
 
         generation = self.generation_agent.run(
             question=question,
@@ -83,6 +120,9 @@ class AgentOrchestrator:
             "sources": generation.data.get("sources", []),
             "mode": mode,
             "agent_trace": agent_trace,
+            # 追加字段，不改已有语义：chat 模式下没有检索，给 None 而不是 0，
+            # 0 会被误读成"检索耗时 0 毫秒"。
+            "retrieval_ms": retrieval_ms,
         }
 
     async def astream(
@@ -112,14 +152,44 @@ class AgentOrchestrator:
         agent_trace: list[str] = []
 
         if mode == "rag":
+            # 检索卸载到线程池（BM25 / FAISS / Redis 全是同步代码），
+            # 计时只包这一段：它是"检索"而不是"整个请求"。
+            retrieval_timer = Timer()
             retrieval = await anyio.to_thread.run_sync(
                 lambda: self.retrieval_agent.run(question=question)
             )
+            try:
+                retrieval = await anyio.to_thread.run_sync(
+                    lambda: self.retrieval_agent.run(question=question)
+                )
+            except ClassifiedError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    EV_RETRIEVAL_COMPLETE,
+                    status="failed",
+                    error_type=RETRIEVAL_ERROR_TYPE.value,
+                    retrieval_ms=retrieval_timer.elapsed_ms_rounded(),
+                )
+                raise ClassifiedError(
+                    ErrorType.RETRIEVAL_ERROR, f"检索失败：{safe_message(exc)}", cause=exc
+                ) from exc
+            retrieval_ms = retrieval_timer.elapsed_ms_rounded()
             agent_trace.append(retrieval.agent)
             sources = retrieval.data.get("sources", [])
+            log_event(
+                EV_RETRIEVAL_COMPLETE,
+                status="ok",
+                retrieval_ms=retrieval_ms,
+                sources=len(sources),
+            )
             yield {
                 "event": "sources",
-                "data": {"sources": sources, "mode": mode},
+                "data": {
+                    "sources": sources,
+                    "mode": mode,
+                    "retrieval_ms": retrieval_ms,
+                },
             }
 
         agent_trace.append(self.generation_agent.name)
