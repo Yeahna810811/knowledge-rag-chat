@@ -10,16 +10,24 @@ Stage 3 做心跳的时候已经踩过一次：`with fail_after(t): await gen.__
 所以这里沿用 Stage 3 的生产者/消费者分离：上游跑在独立任务里往内存流送，
 超时只作用在"等内存流"这一步，取消落在消费者侧，碰不到上游。
 
-**坑二：超时后不能留 dangling task。**
+**坑二：超时后不能留 dangling task，但也不能用 TaskGroup 去管它。**
 生产者如果卡在一次 LLM 网络读上，消费者这边超时返回了，那个任务还活着，
-继续烧着连接和额度。所以每次尝试都开一个 task group。
-检测到超时或上游错误后，先取消该 task group，让 producer 和生成器完成清理，
-等 task group 完整退出之后，再向外抛业务异常。
+继续烧着连接和额度。所以每次尝试都要显式**取消并等待**生产者。
 
-这样既可以保证后台任务被清掉，也避免在 task group 内直接抛 ClassifiedError
-时被 AnyIO 包装成 ExceptionGroup。
+但这里**不能**用 `async with anyio.create_task_group()` 去管它：
+本模块的 `_one_attempt` 是 async generator，`yield` 会把控制权交给消费者；
+消费者一旦断开（disconnect / GeneratorExit / CancelledError），生成器往往
+是在**另一个 task**（或事件循环的 asyncgen finalizer）里被终结的，
+而 CancelScope 要求 enter 与 exit 在同一个 task，于是会抛：
 
-顺带一提，`gen.aclose()` 要放 shield 里——取消已经生效时不屏蔽的话，
+    RuntimeError: Attempted to exit cancel scope in a different task
+                  than it was entered in
+
+所以生产者改成独立 driver task 承载，本 generator 内**不存在跨越 yield 的
+CancelScope**；清理放在 finally 里显式 cancel + await（shield 保护），
+driver 结束之后再向外抛业务异常。
+
+顺带一提，`gen.aclose()` 也要放 shield 里——取消已经生效时不屏蔽的话，
 清理动作自己就会被取消掉。
 
 **坑三：首 token 之后绝不能透明重试。**
@@ -30,6 +38,7 @@ Stage 3 做心跳的时候已经踩过一次：`with fail_after(t): await gen.__
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, AsyncIterator, Callable
 
@@ -119,100 +128,129 @@ async def _one_attempt(
         with anyio.fail_after(timeout):
             return await receive_stream.receive()
 
-    # 关键修复：
+    # ------------------------------------------------------------------
+    # 结构（本模块最要紧的一条约束）：
     #
-    # 不在 anyio TaskGroup 内直接 raise ClassifiedError。
-    # 否则在 Python 3.9 + exceptiongroup / AnyIO 环境中，
-    # TaskGroup 退出时可能把业务异常包装成 ExceptionGroup，
-    # 导致 guarded_astream 外层的：
+    #     driver task（独立任务，自己管生命周期）
+    #         └─ 上游 LLM async generator
+    #               └─ memory object stream
+    #                     └─ 本 generator（只收消息，然后 yield）
     #
-    #     except ClassifiedError
+    # 为什么这里**不能**用 `async with anyio.create_task_group()`：
     #
-    # 无法直接捕获。
+    # TaskGroup / CancelScope 要求 enter 与 exit 发生在**同一个 task**。
+    # 而本函数是 async generator，`yield` 会把控制权交给外部消费者；
+    # 消费者一旦断开（client disconnect / GeneratorExit / CancelledError），
+    # 生成器往往是在**另一个 task**（或事件循环的 asyncgen finalizer）里
+    # 被终结的，此时 cancel scope 就会跨 task exit，抛出：
     #
-    # 因此这里先记住错误，取消并等待 producer 清理，
-    # 等 TaskGroup 完整退出以后再抛出。
+    #     RuntimeError: Attempted to exit cancel scope in a different task
+    #                   than it was entered in
+    #
+    # 所以改成 driver 独立承载：本 generator 里**不存在任何跨越 yield 的
+    # CancelScope**，driver 的停止与等待放在 finally 里显式完成。
+    #
+    # 业务异常依旧先记在 pending_error，等 driver 彻底清理后再抛——
+    # 既不会被清理动作打断，也不会留下 dangling task。
+    #
+    # anyio 刻意不提供"脱离 nursery 的 detached task"原语，
+    # 本项目跑在 asyncio 上，这里直接用 asyncio 的任务原语承载 driver。
+    # ------------------------------------------------------------------
+    driver_task = asyncio.ensure_future(producer())
+
     pending_error: ClassifiedError | None = None
 
-    try:
-        async with anyio.create_task_group() as task_group:
-            task_group.start_soon(producer)
+    async def stop_driver() -> None:
+        """取消并等待 driver，保证不留 dangling task。
 
+        两步都不能少：
+        - cancel()：driver 可能正卡在一次 LLM 网络读上；
+        - await：不等就退出的话，那个任务会变成 dangling task，
+          继续烧着连接和额度。
+
+        注意这里没有跨 yield 的 CancelScope：
+        shield 只包住这次 await，enter / exit 都在当前这一次调用内完成。
+        """
+        if not driver_task.done():
+            driver_task.cancel()
+
+        # shield：取消已经投递时，清理动作本身不能被再次取消，
+        # 否则 await 会立刻再抛一次取消，driver 的 finally（含 gen.aclose()）
+        # 就跑不完，反而真的留下 dangling task。
+        with anyio.CancelScope(shield=True):
             try:
-                kind, payload = await receive(first_token_timeout)
+                await driver_task
+            except BaseException:
+                # driver 的业务异常早已通过 _ERROR 事件送进流里；
+                # 这里剩下的只有取消语义，不能让它盖掉真正要往外抛的异常。
+                pass
 
-            except TimeoutError:
-                pending_error = ClassifiedError(
-                    ErrorType.LLM_TIMEOUT,
-                    f"LLM 首个 token 超时（>{first_token_timeout}s）",
-                )
+    try:
+        try:
+            kind, payload = await receive(first_token_timeout)
 
-                # producer 可能还卡在 LLM 网络读取中。
-                # 必须主动取消，不能让它变成 dangling task。
-                task_group.cancel_scope.cancel()
+        except TimeoutError:
+            pending_error = ClassifiedError(
+                ErrorType.LLM_TIMEOUT,
+                f"LLM 首个 token 超时（>{first_token_timeout}s）",
+            )
 
-            else:
-                while True:
-                    if kind == _ERROR:
-                        # 上游生成器主动失败。
-                        # 先统一分类，再让 task group 清理 producer。
-                        pending_error = classify_exception(payload)
-                        task_group.cancel_scope.cancel()
-                        break
+        else:
+            while True:
+                if kind == _ERROR:
+                    # 上游生成器主动失败：先分类，
+                    # driver 由下面的 finally 统一停止。
+                    pending_error = classify_exception(payload)
+                    break
 
-                    if kind == _END:
-                        # 正常生成结束。
-                        break
+                if kind == _END:
+                    # 正常生成结束。
+                    break
 
-                    # 当前 kind == _ITEM。
-                    #
-                    # TTFT 必须以第一个真实 LLM chunk 为准，
-                    # 不是 SSE meta / heartbeat / trace。
-                    if on_first_token is not None:
-                        on_first_token(
-                            (time.perf_counter() - started_at) * 1000.0
-                        )
-                        on_first_token = None
+                # 当前 kind == _ITEM。
+                #
+                # TTFT 必须以第一个真实 LLM chunk 为准，
+                # 不是 SSE meta / heartbeat / trace。
+                if on_first_token is not None:
+                    on_first_token(
+                        (time.perf_counter() - started_at) * 1000.0
+                    )
+                    on_first_token = None
 
-                    yield payload
+                yield payload
 
-                    try:
-                        kind, payload = await receive(idle_timeout)
+                try:
+                    kind, payload = await receive(idle_timeout)
 
-                    except TimeoutError:
-                        pending_error = ClassifiedError(
-                            ErrorType.LLM_TIMEOUT,
-                            (
-                                "LLM 流式输出空闲超时"
-                                f"（>{idle_timeout}s 没有新内容）"
-                            ),
-                        )
+                except TimeoutError:
+                    pending_error = ClassifiedError(
+                        ErrorType.LLM_TIMEOUT,
+                        (
+                            "LLM 流式输出空闲超时"
+                            f"（>{idle_timeout}s 没有新内容）"
+                        ),
+                    )
+                    break
 
-                        # 已经等待不到新的 chunk。
-                        # 取消仍在后台等待网络数据的 producer。
-                        task_group.cancel_scope.cancel()
-                        break
-
-                    except anyio.EndOfStream:
-                        # producer 已关闭发送端。
-                        # 没有额外错误时按正常结束处理。
-                        break
-
-        # 只有 task group 已经退出到这里之后才抛业务异常。
-        #
-        # 此时：
-        # - producer 已经取消 / 结束
-        # - gen.aclose() 已经执行
-        # - 不应该存在 dangling task
-        # - ClassifiedError 不再被 TaskGroup 包成 ExceptionGroup
-        if pending_error is not None:
-            raise pending_error
+                except anyio.EndOfStream:
+                    # producer 已关闭发送端。
+                    # 没有额外错误时按正常结束处理。
+                    break
 
     finally:
+        # 无论正常结束、超时、上游错误，还是消费者断开
+        # （GeneratorExit / CancelledError / asyncgen finalizer），
+        # driver 都必须被停止并等待——不留下 dangling task。
+        await stop_driver()
+
         try:
             await receive_stream.aclose()
         except Exception:
             pass
+
+    # driver 已完全结束、gen.aclose() 已执行之后才抛业务异常。
+    if pending_error is not None:
+        raise pending_error
 
 
 async def guarded_astream(

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import anyio
 import asyncio
+import gc
 import json
 import logging
 import sys
@@ -1192,6 +1193,160 @@ def test_stage3_final_write_shielded() -> None:
         check("内容是完整答案", service.get_history("f1")["history"][0]["answer"] == "你好世界")
 
 
+# ================================================== M. 取消清理（专项回归）
+#
+# 这一组专门盯一个隐患：
+#
+#     RuntimeError: Attempted to exit cancel scope in a different task
+#                   than it was entered in
+#
+# 触发路径是"消费者在首 token 之后主动关闭生成器"：
+# 生成器被挂起在 yield 上，随后可能由**另一个 task** 终结，
+# 而 anyio 的 CancelScope 要求 enter / exit 在同一个 task。
+#
+# 检测方式说明：
+# 这个异常是 asyncio 在关闭 async generator 时捕获、再交给
+# loop 的 exception handler 报告的（不会直接冒到测试里）。
+# 所以这里显式装一个 handler 把它接下来断言——
+# 不是为了让测试变绿而屏蔽它，恰恰相反：它是被**记录并断言为 0** 的。
+
+
+def _capture_loop_errors() -> tuple[list[str], Any]:
+    """装一个 loop exception handler，收集所有被 asyncio 报告的异常。"""
+    captured: list[str] = []
+
+    def handler(loop: Any, context: dict) -> None:
+        message = str(context.get("message", ""))
+        exc = context.get("exception")
+        captured.append(f"{message} | {exc!r}")
+
+    def install() -> None:
+        asyncio.get_running_loop().set_exception_handler(handler)
+
+    return captured, install
+
+
+def _cancel_scope_errors(captured: list[str]) -> list[str]:
+    return [item for item in captured if "cancel scope" in item]
+
+
+def _remaining_tasks() -> int:
+    """当前事件循环里除自己以外还没结束的任务数（dangling task 判据）。
+
+    只能在**事件循环内**调用：asyncio.all_tasks() 需要有运行中的 loop，
+    asyncio.run() 返回之后 loop 已经关了，在外面调会直接 RuntimeError。
+    """
+    current = asyncio.current_task()
+    return len(
+        [t for t in asyncio.all_tasks() if t is not current and not t.done()]
+    )
+
+
+async def _wait_until_no_pending_tasks(rounds: int = 50) -> int:
+    """等清理收敛，返回最终剩余任务数。
+
+    为什么要"等"而不是立刻断言：
+
+    外层生成器被关闭时，它内部还没 close 的子生成器（orchestrator.astream
+    / astream_text / guarded_astream / _one_attempt）是由事件循环的
+    asyncgen finalizer **异步**收尾的——那个 finalizer 本身会作为一个
+    待执行回调排队。所以刚 aclose() 完立刻数，数到的往往是这个"正在排队
+    的清理回调"，而不是泄漏的 driver。
+
+    只 `sleep(0)` 不够：那只是让出一次控制权，事件循环不一定来得及
+    执行已经排队的回调。这里给真实的时间片让清理跑完，再断言归零。
+
+    注意这不是"为了让测试变绿而放宽"：断言仍然是**必须为 0**，
+    只是允许清理按 asyncio 的调度节奏完成。真泄漏的任务永远不会收敛到 0。
+    """
+    for _ in range(rounds):
+        # 被外层 aclose() 遗弃的内层 async generator（orchestrator.astream /
+        # astream_text / guarded_astream / _one_attempt）是靠 GC 触发收尾的，
+        # 收尾动作（async_generator_athrow）又是被事件循环排队的 task。
+        # 所以先 gc 触发、再让出时间片让它跑完，最后才数。
+        gc.collect()
+        if _remaining_tasks() == 0:
+            return 0
+        await asyncio.sleep(0.01)
+    return _remaining_tasks()
+
+
+def test_stream_aclose_after_first_token_is_clean() -> None:
+    print("\n[M1] 首 token 后 aclose：无跨 task CancelScope、无残留、不落库")
+    if not require_heavy("[M1] aclose 清理"):
+        return
+
+    captured, install = _capture_loop_errors()
+
+    async def scenario(service: Any) -> tuple[int, int]:
+        install()
+        gen = service.astream_ask("会长的问题", session_id="m1", mode="chat")
+        seen = 0
+        async for event in gen:
+            if event["event"] == "delta":
+                seen += 1
+            if seen == 1:
+                break
+        # 消费者主动关闭：GeneratorExit 会砸在生成器的 yield 上，
+        # 这正是原先跨 task 退出 CancelScope 的场景。
+        await gen.aclose()
+        return seen, await _wait_until_no_pending_tasks()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        service, _, fake = new_service(tmpdir)
+        store = CountingStore(service.conversation_store)
+        service._conversation_store = store
+        seen, remaining = asyncio.run(scenario(service))
+
+        check("拿到过真实 token", seen == 1, str(seen))
+        check("没有重试", fake.stream_calls == 1, str(fake.stream_calls))
+        check("没有 dangling task", remaining == 0, str(remaining))
+        check("没有 partial 落库", store.append_calls == 0, str(store.append_calls))
+        check("历史为空", service.get_history("m1")["turns"] == 0)
+        bad = _cancel_scope_errors(captured)
+        check("没有跨 task CancelScope 异常", not bad, str(captured))
+
+
+def test_guard_aclose_while_driver_hanging() -> None:
+    print("\n[M2] 首 token 后 aclose 且 driver 仍卡在上游：driver 必须被停掉")
+
+    captured, install = _capture_loop_errors()
+
+    async def upstream() -> AsyncIterator[str]:
+        yield "第一"
+        # 永久静默：确保消费者关闭时 driver 还活着，
+        # 这样"driver 有没有被取消并等待"才真的被测到。
+        await anyio.sleep(30)
+
+    async def scenario() -> tuple[int, int, int]:
+        install()
+        calls = {"n": 0}
+
+        def factory() -> AsyncIterator[str]:
+            calls["n"] += 1
+            return upstream()
+
+        gen = guarded_astream(
+            factory,
+            policy=RetryPolicy(max_attempts=1),
+            first_token_timeout=5,
+            idle_timeout=5,
+        )
+        seen = 0
+        async for _item in gen:
+            seen += 1
+            break
+        await gen.aclose()
+        return seen, calls["n"], await _wait_until_no_pending_tasks()
+
+    seen, call_count, remaining = asyncio.run(scenario())
+    check("拿到过真实 token", seen == 1, str(seen))
+    check("没有重试", call_count == 1, str(call_count))
+    check("driver 没有残留", remaining == 0, str(remaining))
+    bad = _cancel_scope_errors(captured)
+    check("没有跨 task CancelScope 异常", not bad, str(captured))
+
+
 # ================================================== 附加：错误分类表
 def test_concurrency_isolation() -> None:
     print("\n[L1] 5 并发：ID / 日志 / 重试状态互不干扰")
@@ -1309,6 +1464,9 @@ def main() -> None:
     test_stage3_abort_no_persist()
     test_stage3_generator_exit_no_persist()
     test_stage3_final_write_shielded()
+
+    test_stream_aclose_after_first_token_is_clean()
+    test_guard_aclose_while_driver_hanging()
 
     test_concurrency_isolation()
     test_error_classification_table()
