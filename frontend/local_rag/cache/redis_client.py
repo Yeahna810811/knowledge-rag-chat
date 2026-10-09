@@ -27,7 +27,29 @@ from typing import Any, Iterator, Sequence
 
 import redis
 
+from frontend.local_rag.observability.errors import ErrorType
+from frontend.local_rag.observability.structured_log import (
+    EV_REDIS_UNAVAILABLE,
+    log_event,
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _log_redis_unavailable(operation: str, exc: BaseException) -> None:
+    """Redis 不可用：既留人话 warning，也留一条可机读的结构化事件。
+
+    结构化事件带 request_id，所以能从"这次请求为什么慢"一路追到
+    "因为 Redis 挂了导致缓存没命中"——只有 warning 文本是串不起来的。
+    Redis 是加速器不是数据源，这里永远只降级不抛异常。
+    """
+    logger.warning("Redis %s 失败: %s", operation, exc)
+    log_event(
+        EV_REDIS_UNAVAILABLE,
+        status="degraded",
+        error_type=ErrorType.REDIS_UNAVAILABLE.value,
+        operation=operation,
+    )
 
 
 class RedisClient:
@@ -86,7 +108,7 @@ class RedisClient:
         try:
             return bool(self._client.ping())
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Redis ping 失败: %s", exc)
+            _log_redis_unavailable("ping", exc)
             return False
 
     @property
@@ -98,7 +120,7 @@ class RedisClient:
         try:
             return self._client.get(key)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Redis GET 失败，按未命中处理 (key=%s): %s", key, exc)
+            _log_redis_unavailable("get", exc)
             return None
 
     def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool:
@@ -106,35 +128,35 @@ class RedisClient:
             result = self._client.set(key, value, ex=ex, nx=nx)
             return bool(result)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Redis SET 失败 (key=%s): %s", key, exc)
+            _log_redis_unavailable("set", exc)
             return False
 
     def delete(self, key: str) -> bool:
         try:
             return bool(self._client.delete(key))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Redis DELETE 失败 (key=%s): %s", key, exc)
+            _log_redis_unavailable("delete", exc)
             return False
 
     def incr(self, key: str) -> int | None:
         try:
             return int(self._client.incr(key))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Redis INCR 失败 (key=%s): %s", key, exc)
+            _log_redis_unavailable("incr", exc)
             return None
 
     def expire(self, key: str, seconds: int) -> bool:
         try:
             return bool(self._client.expire(key, seconds))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Redis EXPIRE 失败 (key=%s): %s", key, exc)
+            _log_redis_unavailable("expire", exc)
             return False
 
     def ttl(self, key: str) -> int | None:
         try:
             return int(self._client.ttl(key))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Redis TTL 失败 (key=%s): %s", key, exc)
+            _log_redis_unavailable("ttl", exc)
             return None
 
     # -------------------------------------------------------------------- Lua
@@ -168,7 +190,7 @@ class RedisClient:
                 logger.warning("Redis 不支持 Lua 脚本，后续改用普通命令实现: %s", exc)
             else:
                 # 临时失败：不改 _scripting_supported，下次仍然可以走 Lua
-                logger.warning("Redis EVAL 本次失败（临时），回落到普通命令实现: %s", exc)
+                _log_redis_unavailable("eval", exc)
             return None
 
     # ------------------------------------------------------------------ 生命周期

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, AsyncIterator
 
 from langchain_openai import ChatOpenAI
@@ -7,6 +8,22 @@ from langsmith import traceable
 
 from frontend.local_rag.config.settings import Settings
 from frontend.local_rag.core.agents.base import AgentResult, BaseAgent
+from frontend.local_rag.observability.errors import ClassifiedError
+from frontend.local_rag.observability.retry import (
+    RetryPolicy,
+    policy_from_settings,
+    run_with_retry,
+)
+from frontend.local_rag.observability.stream_guard import guarded_astream
+from frontend.local_rag.observability.structured_log import (
+    EV_LLM_COMPLETE,
+    EV_LLM_RETRY,
+    EV_LLM_START,
+    Timer,
+    log_event,
+)
+
+logger = logging.getLogger(__name__)
 
 RAG_SYSTEM_PROMPT = """你是企业知识库客服助手，优先依据【参考资料】回答用户问题。
 
@@ -57,11 +74,38 @@ class GenerationAgent(BaseAgent):
             raise ValueError(
                 "未检测到 DASHSCOPE_API_KEY，请在 .env 文件中配置阿里云百炼的 API Key"
             )
+        # 两个刻意的非默认配置：
+        #
+        # max_retries=0 —— 关掉 openai SDK 的内建重试。
+        #   默认它是 2，会在 transport 层静默重发：不打日志、不带 request_id，
+        #   流式场景还会把整条流重跑一遍。留着它就是
+        #   "SDK retry × 本项目 retry"，失败时根本数不清到底发了几遍。
+        #   关掉之后重试逻辑全部收敛到 run_with_retry / guarded_astream。
+        #
+        # timeout —— 给非流式调用一个硬上界。流式另有首 token / 空闲超时
+        #   （在 guarded_astream 里），因为流式总时长天然不可预测，
+        #   用总时长卡会把长回答误杀。
         self.llm = ChatOpenAI(
             model=settings.chat_model,
             api_key=settings.dashscope_api_key,
             base_url=settings.dashscope_base_url,
             temperature=0.5,
+            max_retries=settings.llm_sdk_max_retries,
+            timeout=settings.llm_request_timeout_seconds,
+        )
+        self._retry_policy: RetryPolicy = policy_from_settings(settings)
+
+    # ------------------------------------------------------------- 观测辅助
+    def _log_retry(self, attempt: int, error: ClassifiedError, delay: float) -> None:
+        log_event(
+            EV_LLM_RETRY,
+            status="retrying",
+            error_type=error.error_type.value,
+            attempt=attempt,
+            next_attempt=attempt + 1,
+            max_attempts=self._retry_policy.max_attempts,
+            delay_s=delay,
+            message=error.message,
         )
 
     def build_messages(
@@ -115,8 +159,40 @@ class GenerationAgent(BaseAgent):
             question=question, history=history, sources=sources, mode=mode
         )
 
-        response = self.llm.invoke(messages)
+        # 只写长度不写内容：完整 question / answer 进日志既没必要也有风险，
+        # 排障真正需要的是"这次花了多久、重试了几次"。
+        gen_timer = Timer()
+        log_event(
+            EV_LLM_START,
+            mode=mode,
+            question_len=len(question),
+            sources=len(sources),
+            streaming=False,
+        )
+
+        try:
+            response = run_with_retry(
+                lambda: self.llm.invoke(messages),
+                self._retry_policy,
+                on_retry=self._log_retry,
+            )
+        except ClassifiedError as exc:
+            log_event(
+                EV_LLM_COMPLETE,
+                status="failed",
+                error_type=exc.error_type.value,
+                generation_ms=gen_timer.elapsed_ms_rounded(),
+                message=exc.message,
+            )
+            raise
+
         answer = response.content if isinstance(response.content, str) else str(response.content)
+        log_event(
+            EV_LLM_COMPLETE,
+            status="ok",
+            generation_ms=gen_timer.elapsed_ms_rounded(),
+            answer_len=len(answer),
+        )
 
         return AgentResult(
             agent=self.name,
@@ -146,6 +222,11 @@ class GenerationAgent(BaseAgent):
         另一个细节：只 yield 非空文本。上游 chunk 里有相当比例是空串
         （尤其是首 chunk 带 role 信息时），全量转发会让前端多渲染几百次
         空字符串。
+
+        可靠性（Stage 4）由 guarded_astream 提供，两条规则：
+        - 首 token / 空闲超时
+        - **只有在还没吐出任何 token 之前**失败才重试
+          （吐了之后再重试，用户会看到两遍开头；详见 stream_guard 注释）
         """
         mode = (mode or "rag").lower()
         sources = sources or []
@@ -153,6 +234,60 @@ class GenerationAgent(BaseAgent):
             question=question, history=history, sources=sources, mode=mode
         )
 
+        gen_timer = Timer()
+        started_at = gen_timer
+
+        log_event(
+            EV_LLM_START,
+            mode=mode,
+            question_len=len(question),
+            sources=len(sources),
+            streaming=True,
+        )
+
+        # factory 必须是"每次调用返回全新生成器"：重试就是靠重新调用它
+        # 来重发一次 LLM 请求。
+        def factory() -> AsyncIterator[str]:
+            return self._raw_astream(messages)
+
+        pieces: list[str] = []
+        try:
+            # TTFT 不在这里记：它由 service 层统一定义并上报
+            # （request start → 第一个真实 token 发给用户），含检索耗时。
+            # 两层各记一次的话，同一条流会出现两个 ttft_ms 且数值不同，
+            # 排障时反而多一个"到底以哪个为准"的疑问。
+            async for text in guarded_astream(
+                factory,
+                policy=self._retry_policy,
+                first_token_timeout=self.settings.llm_first_token_timeout_seconds,
+                idle_timeout=self.settings.llm_stream_idle_timeout_seconds,
+                on_retry=self._log_retry,
+                on_first_token=None,
+            ):
+                pieces.append(text)
+                yield text
+        except ClassifiedError as exc:
+            log_event(
+                EV_LLM_COMPLETE,
+                status="failed",
+                error_type=exc.error_type.value,
+                streaming=True,
+                generation_ms=gen_timer.elapsed_ms_rounded(),
+                partial_len=sum(len(p) for p in pieces),
+                message=exc.message,
+            )
+            raise
+
+        log_event(
+            EV_LLM_COMPLETE,
+            status="ok",
+            streaming=True,
+            generation_ms=gen_timer.elapsed_ms_rounded(),
+            answer_len=sum(len(p) for p in pieces),
+        )
+
+    async def _raw_astream(self, messages: list[dict]) -> AsyncIterator[str]:
+        """最原始的一层：把 ChatOpenAI 的 chunk 流转成纯文本增量。"""
         async for chunk in self.llm.astream(messages):
             text = _chunk_text(chunk.content)
             if text:

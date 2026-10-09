@@ -100,6 +100,39 @@ class Settings(BaseSettings):
     rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
 
+    # ---- LLM 可靠性（Stage 4）----
+    # 一次非流式 LLM 调用的总体超时。超时后抛 LLM_TIMEOUT，
+    # 对客户端表现为 504。
+    llm_request_timeout_seconds: float = 60.0
+    # 流式：从发起请求到收到第一个真实 token 的等待上限。
+    # 和 request_timeout 分开是因为"排队 40s 才开始出字"和
+    # "出了两个字之后卡住"是两种完全不同的故障，处理策略也不一样。
+    llm_first_token_timeout_seconds: float = 30.0
+    # 流式：两个 token 之间的最大静默时间（空闲超时）。
+    # 注意流式全程可能很长，用"总时长"限流会误杀长回答。
+    llm_stream_idle_timeout_seconds: float = 60.0
+
+    # 重试：max_attempts 是**总尝试次数**（首次 + 重试）。
+    # 3 表示最多调用 3 次 LLM。
+    llm_retry_enabled: bool = True
+    llm_retry_max_attempts: int = 3
+    llm_retry_base_delay_seconds: float = 0.5
+    llm_retry_max_delay_seconds: float = 8.0
+
+    # SDK 内建重试必须关掉。
+    # openai SDK 默认 max_retries=2（实测 root_client.max_retries=2），
+    # 它会在 transport 层静默重发请求：不打日志、不带 request_id、
+    # 流式场景下还会把"整条流重跑一遍"。留着它就是
+    #   SDK retry × 应用层 retry = 最多 3×3 次调用，且完全不可观测。
+    # 关掉后由本项目统一控制：可重试的错误才重试，且只重试到最大次数。
+    llm_sdk_max_retries: int = 0
+
+    # ---- 结构化日志（Stage 4）----
+    # 只依赖标准库 logging：本阶段要的是"能用 request_id 串起一次请求"，
+    # 不是搭一套 metrics 体系。
+    structured_logging_enabled: bool = True
+    log_level: str = "INFO"
+
     # ---- SSE 流式 ----
     # 等待下一个事件的最长时间：超过就发一个心跳注释帧。
     # 作用是穿透代理 / nginx 的空闲超时（很多默认 60s 掐连接），

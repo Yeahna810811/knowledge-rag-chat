@@ -22,6 +22,31 @@ from frontend.local_rag.core.retrieval.query_rewrite import (
 from frontend.local_rag.cache.redis_client import RedisClient
 from frontend.local_rag.core.vector_store import VectorStoreManager
 from frontend.local_rag.db.database import Database
+from frontend.local_rag.observability.errors import (
+    ClassifiedError,
+    ErrorType,
+    classify_exception,
+)
+from frontend.local_rag.observability.request_context import (
+    UNKNOWN,
+    ContextTokens,
+    bind_context,
+    current_request_id,
+    new_request_id,
+    reset_context,
+)
+from frontend.local_rag.observability.structured_log import (
+    EV_LLM_FIRST_TOKEN,
+    EV_PERSISTENCE_COMPLETE,
+    EV_PERSISTENCE_FAILED,
+    EV_REDIS_UNAVAILABLE,
+    EV_REQUEST_COMPLETE,
+    EV_REQUEST_FAILED,
+    EV_REQUEST_START,
+    EV_STREAM_CANCELLED,
+    Timer,
+    log_event,
+)
 from frontend.local_rag.services.conversation_store import ConversationStore
 from frontend.local_rag.services.rate_limiter import RateLimiter
 from frontend.local_rag.services.retrieval_cache import (
@@ -223,26 +248,134 @@ class KnowledgeService:
         self._bump_knowledge_version("upload")
         return result
 
+    # ------------------------------------------------------ 请求生命周期辅助
+    def _begin_request(
+        self,
+        question: str,
+        session_id: str,
+        mode: str,
+        request_id: str | None,
+        *,
+        streaming: bool,
+    ) -> tuple[ContextTokens, str, Timer]:
+        """绑定 request_id 上下文 + 起表 + 打 request_start。
+
+        返回 (复位 token, request_id, 计时器)。调用方必须在 finally 里复位，
+        否则 ContextVar 会泄漏到下一个请求——同一个进程里复用连接的场景
+        下这会表现为"日志里 request_id 串号"。
+
+        request_id 的优先级：显式传入 > 当前上下文（路由已绑）> 新生成。
+        最后一级是为了 service 被直接调用（脚本 / 测试）时不至于打不出 ID。
+        """
+        rid = request_id or current_request_id()
+        if not rid or rid == UNKNOWN:
+            rid = new_request_id()
+        tokens = bind_context(rid, session_id, mode)
+        timer = Timer()
+        log_event(
+            EV_REQUEST_START,
+            question_len=len(question or ""),
+            streaming=streaming,
+        )
+        return tokens, rid, timer
+
+    def _cache_metrics_snapshot(self) -> dict[str, int] | None:
+        """检索前的缓存计数器快照，用来判断本次请求到底命中没命中。
+
+        用"计数差"而不是让缓存层返回一个 per-request 标志：缓存层是
+        跨请求共享的单例，往它上面挂 per-request 状态在并发下必然串。
+        """
+        try:
+            return self.retrieval_cache.metrics()
+        except Exception:  # noqa: BLE001 - 拿不到就不报这项，不影响主链路
+            return None
+
+    def _cache_hit_since(self, snapshot: dict[str, int] | None) -> bool | None:
+        """本次请求是否命中检索缓存。缓存关闭 / 拿不到指标时返回 None。"""
+        if snapshot is None:
+            return None
+        try:
+            now = self.retrieval_cache.metrics()
+        except Exception:  # noqa: BLE001
+            return None
+        if now.get("cache_hit", 0) > snapshot.get("cache_hit", 0):
+            return True
+        if now.get("cache_miss", 0) > snapshot.get("cache_miss", 0):
+            return False
+        return None
+
+    def _log_failed(
+        self, error_type: ErrorType, message: str, timer: Timer, **extra: object
+    ) -> None:
+        log_event(
+            EV_REQUEST_FAILED,
+            status="failed",
+            error_type=error_type.value,
+            total_ms=timer.elapsed_ms_rounded(),
+            message=message,
+            **extra,
+        )
+
     def ask(
         self,
         question: str,
         session_id: str = "default",
         mode: str = "rag",
+        request_id: str | None = None,
     ) -> dict:
-        question = question.strip()
-        if not question:
-            raise ValueError("问题内容不能为空")
+        """非流式问答。
 
-        # 只把最近 MAX_HISTORY_TURNS 轮喂给 LLM，避免 context 无限增长；
-        # 完整历史仍然留在数据库里。
-        history = self._recent_history(session_id, limit=MAX_HISTORY_TURNS)
-        result = self.orchestrator.ask(question, history=history, mode=mode)
-
-        result["session_id"] = session_id
-        result["history_turns"] = self._append_turn(
-            session_id, question, result["answer"], mode, fallback_turns=len(history)
+        可靠性语义必须和流式一致（Stage 4 的硬要求），差别只在"怎么把结果
+        交出去"：这里是一次性返回，流式是分帧下发。所以超时、重试、错误分类、
+        落库纪律两边共用同一套实现，不各写一份。
+        """
+        tokens, rid, timer = self._begin_request(
+            question, session_id, mode, request_id, streaming=False
         )
-        return result
+        try:
+            question = (question or "").strip()
+            if not question:
+                # 仍抛 ValueError：路由层已有 ValueError → 400 的映射，
+                # 改异常类型会动到 Stage 1/2 已验收的行为。
+                self._log_failed(ErrorType.VALIDATION_ERROR, "问题内容不能为空", timer)
+                raise ValueError("问题内容不能为空")
+
+            # 只把最近 MAX_HISTORY_TURNS 轮喂给 LLM，避免 context 无限增长；
+            # 完整历史仍然留在数据库里。
+            history = self._recent_history(session_id, limit=MAX_HISTORY_TURNS)
+            result = self.orchestrator.ask(question, history=history, mode=mode)
+
+            result["session_id"] = session_id
+            result["history_turns"] = self._append_turn(
+                session_id, question, result["answer"], mode, fallback_turns=len(history)
+            )
+            result["request_id"] = rid
+            # timing 是追加字段：retrieval_ms 在 chat 模式下为 None
+            # （用 None 而不是 0，"0 毫秒"会被误读成真的检索过）。
+            result["timing"] = {
+                "total_ms": timer.elapsed_ms_rounded(),
+                "retrieval_ms": result.get("retrieval_ms"),
+            }
+            log_event(
+                EV_REQUEST_COMPLETE,
+                status="ok",
+                total_ms=timer.elapsed_ms_rounded(),
+                retrieval_ms=result.get("retrieval_ms"),
+                answer_len=len(result["answer"]),
+                history_turns=result["history_turns"],
+            )
+            return result
+        except ValueError:
+            raise
+        except ClassifiedError as exc:
+            self._log_failed(exc.error_type, exc.message, timer)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            classified = classify_exception(exc)
+            self._log_failed(classified.error_type, classified.message, timer)
+            raise classified from exc
+        finally:
+            reset_context(tokens)
 
     # ------------------------------------------------------------------ 流式
     async def astream_ask(
@@ -250,12 +383,17 @@ class KnowledgeService:
         question: str,
         session_id: str = "default",
         mode: str = "rag",
+        request_id: str | None = None,
     ) -> AsyncIterator[dict]:
         """流式问答：产出事件字典，由 api 层翻译成 SSE 帧。
 
         事件序列：meta → sources（仅 rag）→ trace → delta* → done
         出错时发 error 事件而不是抛异常——响应头已经在 SSE 握手时发出去了，
         这时候抛异常只能中断连接，前端拿不到任何可读的错误信息。
+
+        request_id 必须在**生成器内部**绑定，不能指望路由：
+        路由在返回 StreamingResponse 时就退栈了，真正的迭代发生在这之后。
+        同理，结束时必须 finally 复位，否则会串到下一个请求。
 
         持久化纪律（阶段 3 验收口径，改动前请先读这段）：
         MySQL 里只允许出现「生成正常走完」的 turn。客户端 abort、代理超时、
@@ -276,92 +414,184 @@ class KnowledgeService:
            里面可能加载几百 MB 的 embedding 模型；
         2. 读历史 / 写历史是同步 SQLAlchemy 调用。
         """
-        question = (question or "").strip()
-        if not question:
-            yield {"event": "error", "data": {"message": "问题内容不能为空"}}
-            return
-
-        mode = (mode or "rag").lower()
-        chunks: list[str] = []
-        sources: list[dict] = []
-        agent_trace: list[str] = []
-
-        history = await anyio.to_thread.run_sync(
-            lambda: self._recent_history(session_id, limit=MAX_HISTORY_TURNS)
+        tokens, rid, timer = self._begin_request(
+            question, session_id, mode, request_id, streaming=True
         )
-        yield {
-            "event": "meta",
-            "data": {"question": question, "session_id": session_id, "mode": mode},
-        }
-
         try:
-            orchestrator = await anyio.to_thread.run_sync(lambda: self.orchestrator)
-            async for event in orchestrator.astream(
-                question, history=history, mode=mode
-            ):
-                name = event.get("event")
-                data = event.get("data") or {}
-                if name == "sources":
-                    sources = data.get("sources", [])
-                elif name == "trace":
-                    agent_trace = data.get("agent_trace", [])
-                elif name == "delta":
-                    chunks.append(data.get("text", ""))
-                yield event
-        except anyio.get_cancelled_exc_class():
-            # 客户端断开 / AbortController / 代理超时 / 外层任务被 cancel。
-            # 只记录，不落库：半成品会污染下一轮的上下文（见方法顶注释）。
-            self._log_stream_interrupted(
-                session_id, question, mode, chunks, reason="client_disconnected"
-            )
-            raise
-        except GeneratorExit:
-            # 显式 aclose() 走的是这条路径，和 cancel 是两条独立的投递方式。
-            # 注意：捕获 GeneratorExit 后只能清理并原样抛出，
-            # 这里绝不能 yield——生成器已经没有接收方了。
-            self._log_stream_interrupted(
-                session_id, question, mode, chunks, reason="stream_closed"
-            )
-            raise
-        except Exception as exc:  # noqa: BLE001
-            # LLM streaming error：半截答案同样不入库。
-            self._log_stream_interrupted(
-                session_id, question, mode, chunks, reason="generation_error"
-            )
-            logger.warning("流式问答失败（未持久化）: %s", exc)
-            yield {"event": "error", "data": {"message": f"问答失败：{exc}"}}
-            return
+            question = (question or "").strip()
+            if not question:
+                self._log_failed(ErrorType.VALIDATION_ERROR, "问题内容不能为空", timer)
+                yield {
+                    "event": "error",
+                    "data": {
+                        "request_id": rid,
+                        "error_type": ErrorType.VALIDATION_ERROR.value,
+                        "message": "问题内容不能为空",
+                    },
+                }
+                return
 
-        # ---- 只有走到这里，才算「生成正常走完」----
-        answer = "".join(chunks)
-        try:
-            # shield=True 的作用现在只剩一件事：保护这次最终写入不被取消打断。
-            # 最后一个 token 发出去之后，客户端随时可能断开（用户手快、代理超时），
-            # 取消会在下一个 await 点投递。不屏蔽的话这条 write 会跟着被取消，
-            # 变成"明明答完了却没存"——和原来的"没答完却存了"是两个方向的同一种错。
-            with anyio.CancelScope(shield=True):
-                history_turns = await anyio.to_thread.run_sync(
-                    lambda: self._append_turn(
-                        session_id, question, answer, mode, fallback_turns=len(history)
-                    )
+            mode = (mode or "rag").lower()
+            chunks: list[str] = []
+            sources: list[dict] = []
+            agent_trace: list[str] = []
+            retrieval_ms: float | None = None
+            ttft_ms: float | None = None
+            cache_hit: bool | None = None
+            cache_snapshot = self._cache_metrics_snapshot()
+
+            history = await anyio.to_thread.run_sync(
+                lambda: self._recent_history(session_id, limit=MAX_HISTORY_TURNS)
+            )
+            yield {
+                "event": "meta",
+                "data": {
+                    "question": question,
+                    "session_id": session_id,
+                    "mode": mode,
+                    "request_id": rid,
+                },
+            }
+
+            try:
+                orchestrator = await anyio.to_thread.run_sync(lambda: self.orchestrator)
+                async for event in orchestrator.astream(
+                    question, history=history, mode=mode
+                ):
+                    name = event.get("event")
+                    data = event.get("data") or {}
+                    if name == "sources":
+                        sources = data.get("sources", [])
+                        retrieval_ms = data.get("retrieval_ms")
+                        cache_hit = self._cache_hit_since(cache_snapshot)
+                    elif name == "trace":
+                        agent_trace = data.get("agent_trace", [])
+                    elif name == "delta":
+                        if ttft_ms is None:
+                            # TTFT 定义（和 Stage 3 保持一致）：
+                            # request start → 第一个真实 LLM token 被发送。
+                            # 不含 meta / heartbeat / trace。
+                            ttft_ms = timer.elapsed_ms_rounded()
+                            log_event(EV_LLM_FIRST_TOKEN, ttft_ms=ttft_ms)
+                        chunks.append(data.get("text", ""))
+                    yield event
+            except anyio.get_cancelled_exc_class():
+                # 客户端断开 / AbortController / 代理超时 / 外层任务被 cancel。
+                # 只记录，不落库：半成品会污染下一轮的上下文（见方法顶注释）。
+                self._log_stream_interrupted(
+                    session_id, question, mode, chunks, reason="client_disconnected"
                 )
-        except Exception as exc:  # noqa: BLE001
-            # 写库失败不该让已经生成好的答案退化成 error 事件：
-            # 回答是主链路，持久化是副链路。
-            logger.warning("流式最终落库失败，本轮未持久化: %s", exc)
-            history_turns = len(history) + 1
-        yield {
-            "event": "done",
-            "data": {
-                "question": question,
-                "answer": answer,
-                "sources": sources,
-                "mode": mode,
-                "session_id": session_id,
-                "history_turns": history_turns,
-                "agent_trace": agent_trace,
-            },
-        }
+                log_event(
+                    EV_STREAM_CANCELLED,
+                    status="cancelled",
+                    error_type=ErrorType.STREAM_CANCELLED.value,
+                    total_ms=timer.elapsed_ms_rounded(),
+                    partial_len=sum(len(c) for c in chunks),
+                )
+                raise
+            except GeneratorExit:
+                # 显式 aclose() 走的是这条路径，和 cancel 是两条独立的投递方式。
+                # 注意：捕获 GeneratorExit 后只能清理并原样抛出，
+                # 这里绝不能 yield——生成器已经没有接收方了。
+                self._log_stream_interrupted(
+                    session_id, question, mode, chunks, reason="stream_closed"
+                )
+                raise
+            except ClassifiedError as exc:
+                # LLM streaming error（含超时 / 重试耗尽）：半截答案同样不入库。
+                self._log_stream_interrupted(
+                    session_id, question, mode, chunks, reason="generation_error"
+                )
+                self._log_failed(
+                    exc.error_type,
+                    exc.message,
+                    timer,
+                    partial_len=sum(len(c) for c in chunks),
+                    streamed_tokens=len(chunks),
+                )
+                yield {
+                    "event": "error",
+                    "data": {
+                        "request_id": rid,
+                        "error_type": exc.error_type.value,
+                        "message": exc.message,
+                    },
+                }
+                return
+            except Exception as exc:  # noqa: BLE001
+                classified = classify_exception(exc)
+                self._log_stream_interrupted(
+                    session_id, question, mode, chunks, reason="generation_error"
+                )
+                self._log_failed(
+                    classified.error_type,
+                    classified.message,
+                    timer,
+                    partial_len=sum(len(c) for c in chunks),
+                    streamed_tokens=len(chunks),
+                )
+                yield {
+                    "event": "error",
+                    "data": {
+                        "request_id": rid,
+                        "error_type": classified.error_type.value,
+                        "message": classified.message,
+                    },
+                }
+                return
+
+            # ---- 只有走到这里，才算「生成正常走完」----
+            answer = "".join(chunks)
+            try:
+                # shield=True 的作用现在只剩一件事：保护这次最终写入不被取消打断。
+                # 最后一个 token 发出去之后，客户端随时可能断开（用户手快、代理超时），
+                # 取消会在下一个 await 点投递。不屏蔽的话这条 write 会跟着被取消，
+                # 变成"明明答完了却没存"——和原来的"没答完却存了"是两个方向的同一种错。
+                with anyio.CancelScope(shield=True):
+                    history_turns = await anyio.to_thread.run_sync(
+                        lambda: self._append_turn(
+                            session_id, question, answer, mode, fallback_turns=len(history)
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001
+                # 走到这里说明 _append_turn 之外的东西炸了（线程池等）。
+                # 写库失败本身不会到这里——它已被 _append_turn 降级并记录。
+                # 无论哪种情况都不该让已经生成好的答案退化成 error 事件。
+                logger.warning("流式最终落库异常，本轮未持久化: %s", exc)
+                history_turns = len(history) + 1
+
+            yield {
+                "event": "done",
+                "data": {
+                    "question": question,
+                    "answer": answer,
+                    "sources": sources,
+                    "mode": mode,
+                    "session_id": session_id,
+                    "request_id": rid,
+                    "history_turns": history_turns,
+                    "agent_trace": agent_trace,
+                    # timing 是追加字段，前端不读也不影响既有渲染逻辑
+                    "timing": {
+                        "total_ms": timer.elapsed_ms_rounded(),
+                        "ttft_ms": ttft_ms,
+                        "retrieval_ms": retrieval_ms,
+                        "cache_hit": cache_hit,
+                    },
+                },
+            }
+            log_event(
+                EV_REQUEST_COMPLETE,
+                status="ok",
+                total_ms=timer.elapsed_ms_rounded(),
+                ttft_ms=ttft_ms,
+                retrieval_ms=retrieval_ms,
+                cache_hit=cache_hit,
+                answer_len=len(answer),
+                history_turns=history_turns,
+            )
+        finally:
+            reset_context(tokens)
 
 
     def _log_stream_interrupted(
@@ -411,12 +641,27 @@ class KnowledgeService:
         mode: str,
         fallback_turns: int,
     ) -> int:
-        """写一轮问答，返回写入后的总轮数（失败时返回降级值）。"""
+        """写一轮问答，返回写入后的总轮数（失败时返回降级值）。
+
+        成功 / 失败都在这里打结构化事件，而不是交给调用方判断：
+        调用方拿到的返回值在成功和失败两种情况下都是个 int，
+        它根本无法区分，让调用方去记日志必然漏掉一半。
+        """
         try:
             self.conversation_store.append_turn(session_id, question, answer, mode)
-            return self.conversation_store.count_turns(session_id)
+            turns = self.conversation_store.count_turns(session_id)
+            log_event(EV_PERSISTENCE_COMPLETE, status="ok", history_turns=turns)
+            return turns
         except Exception as exc:  # noqa: BLE001
+            # 副链路失败不拖死主链路：回答已经生成好了，
+            # 更不该因为写库失败去重新生成（多烧一次额度且大概率同样失败）。
             logger.warning("写入会话历史失败，本轮未持久化: %s", exc)
+            log_event(
+                EV_PERSISTENCE_FAILED,
+                status="failed",
+                error_type=ErrorType.DATABASE_ERROR.value,
+                message="会话持久化失败，不影响本次回答",
+            )
             return fallback_turns + 1
 
     def get_history(self, session_id: str = "default") -> dict:
