@@ -1,0 +1,3 @@
+mode,llm_type,cache_state,concurrency,requests,success,errors,error_rate,total_duration_s,throughput_rps,mean_ms,p50_ms,p95_ms,p99_ms,min_ms,max_ms,ttft_mean_ms,ttft_p50_ms,ttft_p95_ms,ttft_p99_ms,retrieval_mean_ms,retrieval_p50_ms,done_rate,duplicate_delta_count,cache_hit_count,cache_miss_count,cache_unknown_count,error_types,sample_size_latency,sample_size_ttft
+stream,fake,miss,1,100,100,0,0.0,7.37,13.57,73.62,73.66,82.43,97.07,58.82,109.48,32.51,32.51,37.56,50.28,6.67,6.0,1.0,0,0,100,0,,100,100
+stream,fake,miss,10,100,100,0,0.0,0.816,122.61,77.22,62.24,166.2,173.76,51.08,255.13,35.99,28.88,59.78,132.83,7.01,5.7,1.0,0,0,100,0,,100,100
