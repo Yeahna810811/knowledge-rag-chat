@@ -155,9 +155,6 @@ class AgentOrchestrator:
             # 检索卸载到线程池（BM25 / FAISS / Redis 全是同步代码），
             # 计时只包这一段：它是"检索"而不是"整个请求"。
             retrieval_timer = Timer()
-            retrieval = await anyio.to_thread.run_sync(
-                lambda: self.retrieval_agent.run(question=question)
-            )
             try:
                 retrieval = await anyio.to_thread.run_sync(
                     lambda: self.retrieval_agent.run(question=question)
