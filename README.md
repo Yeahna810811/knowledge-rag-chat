@@ -68,6 +68,66 @@ Dense 与 Hybrid 继续作为可配置和实验方案保留。
                      Answer + Sources
 ```
 
+整体架构（含 Stage 3~5 的工程化层）：
+
+```mermaid
+flowchart TB
+    subgraph Client["Client"]
+        VUE["Vue 3 + TypeScript<br/>frontend/web"]
+    end
+
+    subgraph API["FastAPI · frontend/local_rag/api"]
+        RATE["RateLimiter<br/>Redis Lua / 事务管道 · fail-open"]
+        ROUTES["Routes<br/>POST /api/ask<br/>POST /api/ask/stream<br/>POST /api/upload"]
+    end
+
+    subgraph OBS["Observability · Stage 4"]
+        RID["Request ID<br/>X-Request-ID + ContextVar"]
+        LOG["Structured Logging<br/>ttft / retrieval / generation / total"]
+        ERR["Error Classification<br/>9 类 + HTTP 语义映射"]
+        GUARD["Retry · Timeout · Stream Guard<br/>首 token 前可重试，之后绝不重试"]
+    end
+
+    subgraph Core["Service & Agents"]
+        KS["KnowledgeService"]
+        ORCH["AgentOrchestrator"]
+        RA["RetrievalAgent"]
+        GA["GenerationAgent"]
+    end
+
+    subgraph Retrieval["Retrieval"]
+        KR["KnowledgeRetriever<br/>BM25 主路 · Dense 兜底 · RRF 可选"]
+        BM25["LexicalStore / BM25"]
+        FAISS["VectorStore / FAISS + BGE"]
+    end
+
+    subgraph Store["Storage"]
+        MYSQL[("MySQL / SQLite<br/>会话持久化")]
+        REDIS[("Redis<br/>检索缓存 + 限流")]
+    end
+
+    LLM["Qwen / DashScope"]
+
+    VUE -->|HTTP| RATE
+    VUE -->|SSE| RATE
+    RATE --> ROUTES
+    ROUTES --> RID --> KS
+    KS --> ORCH
+    ORCH --> RA
+    ORCH --> GA
+    RA --> KR
+    KR --> BM25
+    KR --> FAISS
+    GA --> LLM
+    KS --> MYSQL
+    RA -.->|cache| REDIS
+    RATE -.-> REDIS
+    KS -.-> LOG
+    KS -.-> ERR
+    GA -.-> GUARD
+    GUARD -.-> LOG
+```
+
 文档入库链路：
 
 ```text
@@ -908,9 +968,132 @@ STRUCTURED_LOGGING_ENABLED=true
 LOG_LEVEL=INFO
 ```
 
-## 8. 快速开始
+## 8. Performance Benchmark
 
-### 8.1 创建环境
+压测工具在 `evaluation/performance/`，与业务代码完全隔离，可重复运行：
+
+```bash
+python -m uvicorn evaluation.performance.fake_app:app --port 8010
+
+python evaluation/performance/run_load_test.py \
+  --base-url http://127.0.0.1:8010 \
+  --llm-type fake \
+  --mode ask stream \
+  --concurrency 1 5 10 20 \
+  --requests-per-level 20
+```
+
+详细方法、CLI 参数与完整结果见：
+
+```text
+evaluation/performance/README.md
+evaluation/performance/results/
+```
+
+### 8.1 两类结果必须分开看
+
+| | Application-level | Real-LLM |
+| --- | --- | --- |
+| LLM | FakeLLM（确定性，无网络） | Qwen / DashScope |
+| 反映 | 应用层：路由 / 限流 / Redis / 检索 / 持久化 / SSE | 用户真实体感 |
+| QPS 能否当线上指标 | **不能** | 才是真实值 |
+
+### 8.2 Application-level（FakeLLM，n=100/档 × 5 轮中位数）
+
+| mode | 并发 | QPS | P50 | P95 | P99 | TTFT P50 | TTFT P95 | 错误率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ask | 1 | 36.45 | 27.23 | 33.30 | 38.37 | – | – | 0% |
+| ask | 5 | 189.13 | 23.41 | 37.89 | 54.82 | – | – | 0% |
+| ask | 10 | 235.66 | 29.83 | 88.62 | 163.68 | – | – | 0% |
+| ask | 20 | 191.78 | 43.24 | 270.04 | 414.06 | – | – | 0% |
+| stream | 1 | 14.13 | 68.63 | 81.40 | 104.27 | 29.12 | 39.42 | 0% |
+| stream | 5 | 79.21 | 58.91 | 79.68 | 97.94 | 26.04 | 37.41 | 0% |
+| stream | 10 | 142.00 | 64.82 | 102.30 | 148.80 | 28.40 | 52.48 | 0% |
+| stream | 20 | 178.18 | 77.58 | 177.77 | 333.92 | 34.12 | 79.13 | 0% |
+
+单位 ms。其中 FakeLLM 自身注入约 40ms 模拟生成耗时，
+因此 stream 的真实应用层开销约在 25~30ms 量级。
+
+**不要用 P50 谈容量**：c=20 时 ask 的 P99 是 414ms、stream 是 334ms，
+而 P50 只有 43 / 78 ms，差 5~9 倍。
+
+取中位数而不是单轮，是因为本机单轮噪声太大——
+n=20 时 5 轮峰谷差 19~35%，甚至出现过
+「命中缓存比未命中还慢」这种违背因果的结果。
+加大样本量也只能压到 19~27%（噪声主要来自机器负载漂移）。
+方法见 `evaluation/performance/README.md` §5.5。
+
+### 8.3 Real-LLM（qwen3.8-max-0902，n=10/档）
+
+| mode | 并发 | QPS | P50 | P95 | TTFT P50 | TTFT P95 | 错误率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ask | 1 | 0.10 | 7672.74 | 23687.86 | – | – | 0% |
+| ask | 5 | 0.41 | 7104.86 | 17415.61 | – | – | 0% |
+| stream | 1 | 0.15 | 5120.04 | 12819.59 | 4247.94 | 8204.22 | 0% |
+| stream | 5 | 0.54 | 5580.33 | 15055.61 | 5031.65 | 10189.36 | 0% |
+
+样本量仅 10，P95 统计意义很弱，只能看量级。
+端到端耗时主要由上游模型决定。
+
+> 这组是修复前测的，未重测：修复省掉的约 2~3ms 本地检索，
+> 相对 5000ms 量级的真实链路占比 <0.1%，远低于 n=10 的噪声。
+
+### 8.4 Cache hit vs miss
+
+| 并发 | 状态 | 检索 mean | E2E mean |
+| ---: | --- | ---: | ---: |
+| 1 | miss | 6.74 | 73.57 |
+| 1 | hit | 3.93 | 70.14 |
+| 10 | miss | 6.46 | 65.64 |
+| 10 | hit | 3.56 | 60.53 |
+
+必须分开表述：**检索延迟**改善 41.7%~44.9%，
+而**端到端**只改善 4.7%~7.8%（个位数百分点），因为端到端里生成占大头。
+
+> 这个"端到端收益"被修正过三次：n=20 单轮是 −17%（噪声）→
+> 服务状态不对等时 −4.7% → 两服务全新对等目录后 −7.8%。
+> 检索那组数字（−42%~−45%）三轮都稳定，端到端一直在 5%~8% 之间晃——
+> **因此只写"个位数百分点"，不写精确值。**
+
+### 8.5 修复重复检索的收益（A/B 实测）
+
+压测中发现 `astream()` 里检索被执行了两次（第一次返回值被丢弃），
+已修复。起两个服务交错测量（修复版 8010 / 未修复版 8011，各 5 轮，n=100/档）：
+
+| mode | 并发 | 基线 P50 | 修复后 P50 | delta | 基线 TTFT P50 | 修复后 TTFT P50 | delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ask | 1 | 26.07 | 27.23 | +4.4% | – | – | – |
+| ask | 5 | 25.66 | 23.41 | −8.8% | – | – | – |
+| ask | 10 | 31.05 | 29.83 | −3.9% | – | – | – |
+| ask | 20 | 44.37 | 43.24 | −2.5% | – | – | – |
+| stream | 1 | 72.23 | 68.63 | −5.0% | 32.07 | 29.12 | **−9.2%** |
+| stream | 5 | 61.12 | 58.91 | −3.6% | 28.02 | 26.04 | **−7.1%** |
+| stream | 10 | 63.07 | 64.82 | **+2.8%** | 30.03 | 28.40 | **−5.4%** |
+| stream | 20 | 79.55 | 77.58 | −2.5% | 37.51 | 34.12 | **−9.0%** |
+
+被直接影响的**检索耗时**信号最强：−24.2%~−42.7%，**4 组全是 5/5 轮为负**。
+
+**不要写"端到端延迟降低 X%"。** `ask` 是天然对照组（修复只动流式路径），
+它四档 delta 符号就不一致（+4.4% ~ −8.8%）；`stream` 端到端同样符号不一致
+（c=10 甚至是 +2.8%），幅度全部落在本机噪声内（基线 5 轮峰谷差 19~27%）。
+
+能站住的是两条：**检索耗时 −24%~−43%**、**TTFT −5%~−9%**。
+
+修复的正确性由**计数**而非延迟证明——压测 app 有 `/_metrics` 端点，
+发一个全新问题看计数器：未修复版 `miss+1` 且 `hit+1`（检索两次），
+修复版 `miss+1`、`hit+0`（检索一次）。另有 22 项单测与进程内探针。
+
+### 8.6 测试环境
+
+Apple M1 Pro / 8 核 / 16 GB，macOS 26.2；Python 3.9.13（项目 `.venv`）；
+Redis 真机 `127.0.0.1:6379`；数据库 SQLite 临时文件；客户端与服务端同机。
+基线 load average 常驻 ~4，**微基准抖动大，结论一律取多轮中位数**。
+
+---
+
+## 9. 快速开始
+
+### 9.1 创建环境
 
 ```bash
 python3 -m venv .venv
@@ -925,7 +1108,7 @@ pip install -r frontend/local_rag/requirements.txt
 
 ---
 
-### 8.2 配置环境变量
+### 9.2 配置环境变量
 
 复制：
 
@@ -959,7 +1142,7 @@ QUERY_REWRITE_WEIGHT=0.3
 
 ---
 
-### 8.3 构建前端
+### 9.3 构建前端
 
 ```bash
 cd frontend/web
@@ -977,7 +1160,7 @@ npm run dev
 
 ---
 
-### 8.4 启动项目
+### 9.4 启动项目
 
 项目根目录：
 
@@ -997,7 +1180,7 @@ http://127.0.0.1:8000/docs
 
 ---
 
-## 9. API
+## 10. API
 
 | Method | Endpoint | 功能 |
 | --- | --- | --- |
@@ -1035,7 +1218,7 @@ curl -X POST http://127.0.0.1:8000/api/ask \
 
 ---
 
-## 10. Benchmark
+## 11. Benchmark
 
 ### 10.1 正式评测配置
 
@@ -1067,7 +1250,7 @@ chunk_overlap = 50
 
 ---
 
-## 11. Retrieval A/B 实验
+## 12. Retrieval A/B 实验
 
 正式运行命令：
 
@@ -1111,7 +1294,7 @@ BM25
 
 ---
 
-## 12. 统计显著性检验
+## 13. 统计显著性检验
 
 运行：
 
@@ -1139,7 +1322,7 @@ Sign Test p = 0.003
 
 ---
 
-## 13. End-to-End RAG Benchmark
+## 14. End-to-End RAG Benchmark
 
 最终使用：
 
@@ -1194,7 +1377,7 @@ Safe Refusal 仅统计：
 
 ---
 
-## 14. Latency
+## 15. Latency
 
 最终 BM25-RAG：
 
@@ -1218,7 +1401,7 @@ P95     = 5.33 s
 
 ---
 
-## 15. 为什么有两组 Retrieval 数字
+## 16. 为什么有两组 Retrieval 数字
 
 Retrieval A/B：
 
@@ -1248,7 +1431,7 @@ evaluate_rag.py
 
 ---
 
-## 16. 测试
+## 17. 测试
 
 Retrieval 算法测试：
 
@@ -1284,6 +1467,27 @@ python tests/test_async_sse.py
 
 ```bash
 python tests/test_reliability_observability.py
+```
+
+性能统计自检（分位数 / 空样本 / CSV 契约；不起服务、不调 LLM，CI 必跑）：
+
+```bash
+python tests/test_performance_stats.py
+```
+
+流式路径检索次数回归（22 项；不起服务，CI 必跑）：
+
+```bash
+python tests/test_orchestrator_retrieval_once.py
+```
+
+性能压测（**不在 CI 里跑真实 LLM**，只做脚本自检；真实 benchmark 手动运行）：
+
+```bash
+python -m uvicorn evaluation.performance.fake_app:app --port 8010
+python evaluation/performance/run_load_test.py \
+  --base-url http://127.0.0.1:8010 --llm-type fake \
+  --concurrency 1 5 10 20 --requests-per-level 20
 ```
 
 当前已覆盖：
@@ -1337,9 +1541,13 @@ request_id 自动生成 / 响应头 / SSE meta / 复用客户端传入值
 Redis 故障仍 fail-open 且有 warning 日志、不变成 500
 自己限流 429 + Retry-After，且不进入 LLM generation
 total_ms / ttft_ms / generation_ms / retrieval_ms 定义正确
+abort / aclose 清理：无跨 task CancelScope、无残留 task、不落库
+流式路径检索恰好执行一次（chat 模式零次）
+缓存命中归因 cache_hit 在 hit / miss / 无检索 / 指标不可用四种情形下的取值
+分位数计算（已知答案钉死）、空样本不顶替、CSV 字段契约
 ```
 
-此前测试结果：
+此前测试结果（各自带 runner 的**断言项数**；pytest 收集到的是函数数，见下）：
 
 ```text
 tests/test_retrieval.py             26 passed
@@ -1349,12 +1557,19 @@ tests/test_database.py              51 passed  （SQLite 默认）
 tests/test_redis.py                 71 passed  （fakeredis 默认）
                                     80 passed  （连真实 Redis 7）
 tests/test_async_sse.py             82 passed  （httpx + ASGITransport）
-tests/test_reliability_observability.py  148 passed  （全部 deterministic stub）
+tests/test_reliability_observability.py  158 passed  （全部 deterministic stub）
+tests/test_performance_stats.py     44 passed
+tests/test_orchestrator_retrieval_once.py 22 passed
 ```
+
+同一批文件用 `pytest -q` 跑出来的**函数数**是：
+reliability 34、database 13、retrieval 5、redis 16、async_sse 17、
+knowledge_retriever 6（后五项合计 57）。
+两套数字口径不同，不要互相比较。
 
 ---
 
-## 17. Docker
+## 18. Docker
 
 ```bash
 docker compose up --build
@@ -1362,7 +1577,7 @@ docker compose up --build
 
 ---
 
-## 18. 项目结构
+## 19. 项目结构
 
 ```text
 knowledge-rag-chat/
@@ -1409,11 +1624,14 @@ knowledge-rag-chat/
 │   ├── test_database.py
 │   ├── test_redis.py
 │   ├── test_async_sse.py
-│   └── test_reliability_observability.py
+│   ├── test_reliability_observability.py
+│   ├── test_performance_stats.py           # Stage 5 压测脚本自检
+│   └── test_orchestrator_retrieval_once.py # Stage 5 流式检索次数回归
 │
 └── evaluation/
     ├── EVALUATION_AUDIT.md
     ├── README.md
+    ├── final_regression_report.md      # Stage 5 回归判定
     ├── eval_dataset_v3.jsonl
     ├── eval_dataset_oral_v3.jsonl
     ├── corpus/
@@ -1422,15 +1640,35 @@ knowledge-rag-chat/
     ├── significance_test.py
     ├── benchmark_runtime.py
     ├── evaluate_rag.py
+    ├── performance/                    # Stage 5
+    │   ├── fake_app.py            # 真实栈 + FakeLLM 的压测应用（含 /_metrics 计数器端点）
+    │   ├── run_load_test.py       # 压测执行器（CLI 可配置）
+    │   ├── make_charts.py         # 从 CSV 出图
+    │   ├── aggregate_ab.py        # 配对 A/B：30 个原始 CSV -> 中位数表
+    │   ├── probe_retrieval_count.py  # 进程内计数探针（证明检索次数）
+    │   ├── README.md
+    │   └── results/
+    │       ├── performance_summary.csv
+    │       ├── performance_requests.csv
+    │       ├── real_summary.csv
+    │       ├── cache_miss_summary.csv
+    │       ├── cache_hit_summary.csv
+    │       ├── ab_summary.csv           # 5 轮交错中位数（README 表格数据源）
+    │       ├── ab_fix_vs_baseline/      # 30 个原始 CSV + 代码切换计数证据
+    │       └── *.png
     └── results/
         ├── retrieval_final/
         ├── rag_final/
+        ├── retrieval_stage5/            # Stage 5 重跑的 A/B
+        ├── rag_stage5_retrieval_only/   # Stage 5 重跑的 100 题检索
+        ├── rag_stage5_after_fix/        # 修复重复检索后的复跑（零回归）
+        ├── rag_stage5_judge_subset/     # LLM Judge 20 题子集
         └── archive/
 ```
 
 ---
 
-## 19. 正式结果
+## 20. 正式结果
 
 Retrieval：
 
@@ -1455,6 +1693,16 @@ evaluation/results/rag_final/
 evaluation/results/archive/prompt_ablation/
 ```
 
+Stage 5 重跑（回归验证，与上面历史结果逐位相同）：
+
+```text
+evaluation/results/retrieval_stage5/            # Retrieval A/B，148 个数值单元零差异
+evaluation/results/rag_stage5_retrieval_only/   # 100 题 RAG 检索
+evaluation/results/rag_stage5_after_fix/        # 修复重复检索后的复跑，同样零差异
+evaluation/results/rag_stage5_judge_subset/     # LLM Judge 20 题子集（仅链路验证）
+evaluation/final_regression_report.md           # 判定依据
+```
+
 历史实验只用于记录项目迭代，不作为当前正式 Benchmark 结论。
 
 完整评测设计与审计过程见：
@@ -1465,7 +1713,7 @@ evaluation/EVALUATION_AUDIT.md
 
 ---
 
-## 20. 实验结论与边界
+## 21. 实验结论与边界
 
 当前实验表明：
 
@@ -1494,3 +1742,43 @@ bge-small-zh-v1.5
 - 增加 Cross Encoder Reranker；
 
 需要重新运行 Benchmark 决定新的 Retrieval 策略。
+
+## 22. Limitations
+
+* **压测规模有限**：最高测到 20 并发、每档 100 个样本，且客户端与服务端同机。
+  这不构成线上容量结论，不能据此宣称"高并发"或"数千 QPS"。
+* **测量噪声不可忽略**：本机基线 load average 常驻 ~4。
+  同一份代码 5 轮跑出的 P50 峰谷差，n=20 时 19~35%、n=100 时仍有 19~27%
+  ——**加大样本量并不能解决**，主要噪声源是机器负载漂移而非样本量。
+  所有结论均取 5 轮交错中位数，单轮数字不具可复现性
+  （详见 `evaluation/performance/README.md` §5.5）。
+* **A/B 只在 FakeLLM + SQLite 下做，且只对部分指标作数值声称**：
+  修复收益只对**检索耗时（−24%~−43%）和 TTFT（−5%~−9%）**给出数字；
+  **端到端延迟不声称任何数值**——它落在本机噪声内，连符号都不稳定。
+  另外第一版 A/B 因两个服务的 `PERF_WORK_DIR` 状态不对等
+  （一个已积累几千条会话历史）得出过假的单调结论，已撤回并重测
+  （详见 `evaluation/performance/README.md` §5.6）。
+* **Real-LLM 样本量小**：每档仅 10 次调用，P95/P99 只能看量级，
+  且受上游网络波动影响明显（P50 7.1s、P95 17.4s 同一档位）。
+* **数据库压测用的是 SQLite**，不是 Docker Compose 里的 MySQL。
+  SQLite 的写锁行为与 MySQL 不同，持久化相关的延迟数字不能直接外推。
+* **Real-LLM 数字是修复前测的**：本次修复只影响本地检索（约 2~3ms），
+  相对 5000ms 量级的真实链路占比 <0.1%，未重测（详见 §8.3）。
+  若换成低延迟模型（<500ms）必须重跑。
+* **评测语料规模小**：正式 benchmark 为 44 篇文档 / 46 个 chunk。
+  随机基线 Hit@3 已经达到 6.5%，指标天花板受限，
+  结论只在这套语料下成立。
+* **LLM Judge 未做全量重跑**：Stage 5 只重跑了 retrieval，
+  历史 Judge 结果保留但未复现（详见 `evaluation/final_regression_report.md`）。
+* **单机单进程**：没有多副本、没有负载均衡、没有连接池调优，
+  也没有做长时间稳定性 / 内存增长测试。
+
+## 23. Future Work
+
+* 在 MySQL + 多 worker 下重跑压测，拿到更接近部署形态的基线。
+  （流式路径的重复检索已修复，见 §8.5；`timing.cache_hit` 随之恢复正确。）
+* 引入真正的 metrics 导出（Prometheus / OpenTelemetry），
+  替换当前"结构化日志 + 进程内计数器"的做法。
+* 扩大评测语料规模，降低随机基线、拉开指标区分度。
+* Agent / LangGraph / MCP / Tool Calling：本项目刻意不做，
+  留给下一个项目。

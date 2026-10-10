@@ -1,0 +1,41 @@
+{
+  "dataset": "/Users/killg/WorkBuddy/2026-09-25-10-26-19/knowledge-rag-chat/knowledge-rag-chat/evaluation/eval_dataset_v3.jsonl",
+  "retriever": "bm25",
+  "corpus_files": 44,
+  "chunks": 46,
+  "chunk_size": 500,
+  "chunk_overlap": 50,
+  "questions": 20,
+  "answerable_questions": 20,
+  "unanswerable_questions": 0,
+  "retrieval": {
+    "hit@1": 0.8,
+    "hit@3": 1.0,
+    "hit@5": 1.0,
+    "mrr": 0.8917
+  },
+  "latency": {
+    "retrieval": {
+      "avg_ms": 0.74,
+      "p50_ms": 0.71,
+      "p95_ms": 1.52
+    },
+    "end_to_end": {
+      "avg_ms": 4664.03,
+      "p50_ms": 4149.96,
+      "p95_ms": 7322.56
+    }
+  },
+  "answering": {
+    "basic_correctness": 0.85,
+    "refusal_accuracy": null
+  },
+  "llm_judge": {
+    "correctness": 1.0,
+    "faithfulness": 1.0,
+    "relevance": 1.0,
+    "safe_refusal_unanswerable": null,
+    "judged_questions": 20,
+    "judged_unanswerable": 0
+  }
+}

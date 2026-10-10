@@ -34,6 +34,17 @@ jobs:
       # 重试的 sleep 全部注入，用例不依赖真实时间，也不需要真实 LLM。
       - name: Reliability and observability tests
         run: python tests/test_reliability_observability.py
+      # 性能压测脚本的自检：只校验统计函数（分位数 / 空样本 / CSV 契约），
+      # 不起服务、不发请求、不调真实 LLM。
+      # 真实 benchmark 按 evaluation/performance/README.md 手动执行——
+      # 塞进每次 PR CI 会又慢又烧额度，而且上游网络抖动会让结果不确定。
+      - name: Performance stats self-check
+        run: python tests/test_performance_stats.py
+      # 流式路径检索次数回归：astream 里检索被执行两次的 bug 功能上完全正确，
+      # 只是慢一倍 + 缓存归因错，单看输出发现不了，只能靠计数钉死。
+      # 不起服务、不连 Redis、不调真实 LLM。
+      - name: Orchestrator retrieval-once regression
+        run: python tests/test_orchestrator_retrieval_once.py
       - name: Import app module
         run: python -c "from frontend.local_rag.app import create_app; create_app(); print('ok')"
         env:

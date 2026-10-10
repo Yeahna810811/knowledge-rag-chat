@@ -1,0 +1,5 @@
+决定性验证：哪个端口跑哪份代码（计数，无噪声）
+判据：未修复=一次请求 miss+1 且 hit+1；修复=miss+1 且 hit+0
+
+8011 基线(未修复): delta={'cache_hit': 1, 'cache_miss': 1, 'cache_error': 0, 'cache_write': 1, 'cache_bypass': 0}
+8010 修复版      : delta={'cache_hit': 0, 'cache_miss': 1, 'cache_error': 0, 'cache_write': 1, 'cache_bypass': 0}
