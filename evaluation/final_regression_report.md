@@ -145,7 +145,7 @@ except ClassifiedError:
 
 而**非流式 `ask()` 只检索一次**——所以这是流式路径独有的回归。
 
-**修复方式**：`orchestrator.py` 删除 3 行（第一次调用）。
+**修复方式**：`frontend/local_rag/core/agents/orchestrator.py` 删除 3 行（第一次调用）。
 
 **证据 1 · 确定性的计数**（不依赖延迟，不受噪声影响）：
 

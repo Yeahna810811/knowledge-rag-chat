@@ -810,7 +810,7 @@ event=llm_complete request_id=9f2c… session_id=s1 mode=rag status=ok generatio
 
 上游 SDK 抛出来的异常是个大杂烩，直接往上抛调用方只能 `except Exception`，
 然后要么一股脑重试（把 401 也重试了），要么一股脑不重试（把网络抖动也放过了）。
-`observability/errors.py` 只回答三个问题：是什么类型、该不该重试、给客户端什么状态码。
+`frontend/local_rag/observability/errors.py` 只回答三个问题：是什么类型、该不该重试、给客户端什么状态码。
 
 | error_type | 触发 | 可重试 | HTTP |
 | --- | --- | --- | --- |
@@ -1220,7 +1220,7 @@ curl -X POST http://127.0.0.1:8000/api/ask \
 
 ## 11. Benchmark
 
-### 10.1 正式评测配置
+### 11.1 正式评测配置
 
 正式数据集：
 

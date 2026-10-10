@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | LLM | `FakeLLM`（进程内确定性 token 流，零网络、零额度） | Qwen / DashScope 真实调用 |
 | 测的是 | FastAPI 路由、限流、Redis 检索缓存、BM25 检索、SQLite 持久化、SSE 分帧、并发调度 | 用户真实体感：TTFT、整轮生成耗时、上游抖动 |
-| 结果文件 | `performance_summary.csv` / `cache_*_summary.csv` | `real_summary.csv` |
+| 结果文件 | `results/performance_summary.csv` / `results/cache_*_summary.csv` | `results/real_summary.csv` |
 | 能不能写进简历的 QPS | **不能**当作真实线上 QPS | 才是真实 QPS |
 
 **FakeLLM 的 QPS 不是真实 LLM 的 QPS。** 两者相差两个数量级（见下），
@@ -171,7 +171,8 @@ PERF_WORK_DIR=/tmp/rag-perf-work \
 检索被执行了两次，第一次 miss（写入缓存）、第二次立刻命中刚写进去的那条，
 于是 `cache_hit` 只要两次里有 1 次命中就报 `true`，**首次查询也被标成命中**。
 
-根因已修（删掉重复的那次检索调用，`orchestrator.py` 3 行删除）。
+根因已修（删掉重复的那次检索调用，
+`frontend/local_rag/core/agents/orchestrator.py` 3 行删除）。
 修复后每次请求只会 +1 一个计数器，`cache_hit` 恢复正确。
 由 `tests/test_orchestrator_retrieval_once.py`（22 项）和
 `probe_retrieval_count.py`（进程内计数探针）双重钉死，防止复发。
